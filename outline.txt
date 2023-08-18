@@ -1,0 +1,14 @@
+A simple movie collection crud app
+Functionality:
+    Create new movies to and add them to the database
+    Update previously added movies in the database
+    Delete movies from the data base
+    Read movies from the database
+
+    Create a way to store movies in a trie/Hashmap - trie for ease of searching by title
+
+Structs:
+    Datastructure that holds the movies stored in a trie by title
+    Some sort of HashMap/File relationship datastructure for storing the movie data
+    A movie struct that should be able to flow in and out of JSON
+    
