@@ -130,6 +130,45 @@ impl MovieTrie {
         curr.borrow_mut().key = Some(key);
         Ok(())
     }
+    /// Helper function for delete method, not intended to be part of the public interface.
+    fn delete_helper(
+        &mut self,
+        title: &Vec<char>,
+        cur_root: Rc<RefCell<MovieTrieNode>>,
+        i: usize,
+    ) -> (Option<u32>, bool) {
+        if i == title.len() {
+            let (ret_key, ret_flag) =
+                match (cur_root.borrow().key, cur_root.borrow().children.is_empty()) {
+                    (Some(k), true) => (Some(k), true),
+                    (Some(k), false) => (Some(k), false),
+                    (None, true) => (None, true),
+                    (None, false) => (None, false),
+                };
+            return (ret_key, ret_flag);
+        } else if cur_root.borrow().children.contains_key(&title[i]) {
+            let next_root = Rc::clone(&cur_root.borrow().children[&title[i]]);
+            let (key, flag) = self.delete_helper(title, next_root, i + 1);
+            let flag = if flag {
+                cur_root.borrow_mut().children.remove(&title[i]);
+                cur_root.borrow().children.is_empty()
+            } else {
+                false
+            };
+            return (key, flag);
+        } else {
+            return (None, false);
+        }
+    }
+    /// Delete a movie from the trie. The function returns an `Option<u32>` reprenting its unique key of the movie title. The
+    /// return value will be the Some variant holding the `u32` that is the unique key for the given movie if it exists in the Trie,
+    /// otherwise None will be returned.
+    pub fn delete<T: Into<Vec<char>>>(&mut self, title: T) -> Option<u32> {
+        let cur_root = Rc::clone(&self.root);
+        let title = title.into();
+        let (key, _) = self.delete_helper(&title, cur_root, 0);
+        key
+    }
 }
 
 pub struct MovieCollection {
@@ -173,5 +212,42 @@ mod test {
         println!("{:?}", new_trie);
 
         assert!(new_trie.contains(movie).is_some());
+    }
+
+    #[test]
+    fn test_movie_trie_delete() {
+        let mut new_trie = MovieTrie::new();
+        let movie1 = String::from("Lord of the Rings: The Fellowship of the Ring")
+            .chars()
+            .collect::<Vec<char>>();
+        new_trie.insert(movie1.clone(), 1);
+        let movie2 = String::from("Lord of the Rings: The Two Towers")
+            .chars()
+            .collect::<Vec<char>>();
+        new_trie.insert(movie2.clone(), 2);
+        let movie3 = String::from("Lord of the Rings: The Return of the King")
+            .chars()
+            .collect::<Vec<char>>();
+        new_trie.insert(movie3.clone(), 3);
+
+        if let Some(k) = new_trie.delete(
+            String::from("Lord of the Rings: The Return of the King")
+                .chars()
+                .collect::<Vec<char>>(),
+        ) {
+            println!(
+                "Return of the king deleted: {}",
+                new_trie.contains(movie3).is_none()
+            );
+            assert_eq!(k, 3);
+
+            println!(
+                "Trie contains other movies: {}",
+                new_trie.contains(movie1.clone()).is_some()
+                    && new_trie.contains(movie2.clone()).is_some()
+            );
+
+            assert!(new_trie.contains(movie1).is_some() && new_trie.contains(movie2).is_some());
+        }
     }
 }
