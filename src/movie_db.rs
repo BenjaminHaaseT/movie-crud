@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::default::Default;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufWriter, Read, Write, Seek, SeekFrom};
+use std::path::Path;
 use std::rc::Rc;
+
 
 pub mod prelude {
     pub use super::*;
@@ -15,12 +17,16 @@ pub mod prelude {
 #[derive(Debug)]
 pub enum DbError {
     AlreadyExists(String),
+    FileDoesNotExist(String),
+    LoadError(String)
 }
 
 impl Display for DbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DbError::AlreadyExists(s) => write!(f, "Movie {s} already exists."),
+            DbError::FileDoesNotExist(s) => write!(f, "File {s} does not exist."),
+            DbError::LoadError(s) => write!(f, "Error loading {s}."),
         }
     }
 }
@@ -28,13 +34,13 @@ impl Display for DbError {
 /// A struct that represents a single movie.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Movie {
-    /// Title of the movie
+    /// Title of the movie.
     title: String,
-    /// The rating of the movie out of five stars given by the user
+    /// The rating of the movie out of five stars given by the user.
     rating: u8,
-    /// A brief description of the movie
+    /// A brief description of the movie.
     description: String,
-    /// A url link to the movie image
+    /// A url link to the movie image.
     image: String,
 }
 
@@ -59,7 +65,7 @@ impl Movie {
 struct MovieTrieNode {
     /// Contains all the characters in the current node mapping them to their respective `TrieNode`s if applicable.
     children: HashMap<char, Rc<RefCell<MovieTrieNode>>>,
-    /// A key that represents the possiblity that this node terminates a given string, if `self.key` is the `Some` variant
+    /// A key that represents the possibility that this node terminates a given string, if `self.key` is the `Some` variant
     /// then the `u32` it holds represents the key for the given movie.
     key: Option<u32>,
 }
@@ -138,14 +144,7 @@ impl MovieTrie {
         i: usize,
     ) -> (Option<u32>, bool) {
         if i == title.len() {
-            let (ret_key, ret_flag) =
-                match (cur_root.borrow().key, cur_root.borrow().children.is_empty()) {
-                    (Some(k), true) => (Some(k), true),
-                    (Some(k), false) => (Some(k), false),
-                    (None, true) => (None, true),
-                    (None, false) => (None, false),
-                };
-            return (ret_key, ret_flag);
+            return (cur_root.borrow().key, cur_root.borrow().children.is_empty());
         } else if cur_root.borrow().children.contains_key(&title[i]) {
             let next_root = Rc::clone(&cur_root.borrow().children[&title[i]]);
             let (key, flag) = self.delete_helper(title, next_root, i + 1);
@@ -160,7 +159,7 @@ impl MovieTrie {
             return (None, false);
         }
     }
-    /// Delete a movie from the trie. The function returns an `Option<u32>` reprenting its unique key of the movie title. The
+    /// Delete a movie from the trie. The function returns an `Option<u32>` representing its unique key of the movie title. The
     /// return value will be the Some variant holding the `u32` that is the unique key for the given movie if it exists in the Trie,
     /// otherwise None will be returned.
     pub fn delete<T: Into<Vec<char>>>(&mut self, title: T) -> Option<u32> {
@@ -171,9 +170,43 @@ impl MovieTrie {
     }
 }
 
+/// A data structure for managing movies like a database.
+/// Uses a `MovieTrie` for efficient lookups by title, as well finding results similar to a given search query.
+/// Uses a `HashMap` for mapping a movies id to its current location in the data base i.e file.
 pub struct MovieCollection {
     trie: MovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
+    cur_file: Option<File>,
+}
+
+impl MovieCollection {
+    pub fn new() -> Self {
+        MovieCollection {
+            trie: MovieTrie::new(),
+            movie_map: HashMap::new(),
+            cur_file: None,
+        }
+    }
+
+    pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
+        // TODO: Check if we already have an open file
+        self.cur_file = if let Ok(f) = OpenOptions::new().read(true).append(true).create(true).open(path) {
+            Some(f)
+        } else {
+            return Err(DbError::LoadError(path.into()));
+        };
+        // load data from cur file into `self.trie` and `self.movie_map`
+        // We know if we have reached this point a file has been read succsuf
+        let f = self.cur_file.as_mut().unwrap();
+        let mut cur_pos = SeekFrom::Start(0);
+        let mut cur_length_buf = [0_u8; 4];
+        // Check if we have data to load from the current file
+        if let Ok(_) = f.read_exact(&mut cur_length_buf) {
+
+        }
+
+        Ok()
+    }
 }
 
 #[cfg(test)]
