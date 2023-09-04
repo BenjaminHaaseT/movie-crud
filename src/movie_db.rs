@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::default::Default;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, Read, Write, Seek, SeekFrom};
+use std::io::{self, BufRead, BufWriter, BufReader, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::rc::Rc;
+
+
 
 
 pub mod prelude {
@@ -18,7 +20,7 @@ pub mod prelude {
 pub enum DbError {
     AlreadyExists(String),
     FileDoesNotExist(String),
-    LoadError(String)
+    LoadError
 }
 
 impl Display for DbError {
@@ -26,7 +28,7 @@ impl Display for DbError {
         match self {
             DbError::AlreadyExists(s) => write!(f, "Movie {s} already exists."),
             DbError::FileDoesNotExist(s) => write!(f, "File {s} does not exist."),
-            DbError::LoadError(s) => write!(f, "Error loading {s}."),
+            DbError::LoadError => write!(f, "Error loading file."),
         }
     }
 }
@@ -34,10 +36,10 @@ impl Display for DbError {
 /// A struct that represents a single movie.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Movie {
-    /// Title of the movie.
-    title: String,
     /// The rating of the movie out of five stars given by the user.
     rating: u8,
+    /// Title of the movie.
+    title: String,
     /// A brief description of the movie.
     description: String,
     /// A url link to the movie image.
@@ -176,7 +178,7 @@ impl MovieTrie {
 pub struct MovieCollection {
     trie: MovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
-    cur_file: Option<File>,
+    cur_file: Option<BufReader<File>>,
 }
 
 impl MovieCollection {
@@ -191,21 +193,71 @@ impl MovieCollection {
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
         // TODO: Check if we already have an open file
         self.cur_file = if let Ok(f) = OpenOptions::new().read(true).append(true).create(true).open(path) {
-            Some(f)
+            Some(BufReader::new(f))
         } else {
-            return Err(DbError::LoadError(path.into()));
+            return Err(DbError::LoadError);
         };
+
         // load data from cur file into `self.trie` and `self.movie_map`
-        // We know if we have reached this point a file has been read succsuf
+        // We know if we have reached this point a file has been loaded
         let f = self.cur_file.as_mut().unwrap();
+
+        // Buffer for reading length tag for each record
+        let mut cur_length_buf = [0; 12];
+        // For creating the
         let mut cur_pos = SeekFrom::Start(0);
-        let mut cur_length_buf = [0_u8; 4];
-        // Check if we have data to load from the current file
+
         if let Ok(_) = f.read_exact(&mut cur_length_buf) {
+            // Get length of encoded data id, title_len, description_len, image_len
+            // TODO: Fix this!
+            let (id, title_len, description_len, image_len) = MovieCollection::decode_length(&cur_length_buf);
+
+            // Read the bytes of the encoded movie
+            let mut title = Vec::with_capacity(title_len as usize);
+            let mut description = Vec::with_capacity(description_len as usize);
+            let mut image = Vec::with_capacity(image_len as usize);
+
+            if let Err(_) = f.read_exact(title.as_mut_slice()) {
+                return Err(DbError::LoadError);
+            }
+            if let Err(_) = f.read_exact(description.as_mut_slice()) {
+                return Err(DbError::LoadError);
+            }
+            if let Err(_) = f.read_exact(image.as_mut_slice()) {
+                return Err(DbError::LoadError);
+            }
 
         }
 
-        Ok()
+        Ok(())
+    }
+
+    fn decode_length(bytes: &[u8; 12]) -> (u32, u32, u32) {
+        let (mut title_len, mut description_len, mut image_len) = (0, 0, 0);
+        for i in 0..4 {
+            title_len ^= (bytes[i] as u32) << (i * 8);
+        }
+        for i in 4..8 {
+            description_len ^= (bytes[i] as u32) << ((i % 4) * 8);
+        }
+        for i in 8..12 {
+            image_len ^= (bytes[i] as u32) << ((i % 4) * 8);
+        }
+        (title_len, description_len, image_len)
+    }
+
+    fn encode_length(title_len: u32, description_len: u32, image_len: u32) -> [u8; 12] {
+        let mut bytes = [0_u8; 12];
+        for i in 0..4 {
+            bytes[i] = ((title_len >> (i * 8)) as u8) & 0xff;
+        }
+        for i in 4..8 {
+            bytes[i] = ((description_len >> ((i % 4) * 8)) as u8) & 0xff;
+        }
+        for i in 8..12 {
+            bytes[i] = ((image_len >> ((i % 4) * 8)) as u8) & 0xff;
+        }
+        bytes
     }
 }
 
@@ -282,5 +334,24 @@ mod test {
 
             assert!(new_trie.contains(movie1).is_some() && new_trie.contains(movie2).is_some());
         }
+    }
+
+    #[test]
+    fn test_encode_decode_length() {
+        let title_len = 23697_u32;
+        let description_len = 3292_u32;
+        let image_len = 738_u32;
+
+        let encoding = MovieCollection::encode_length(title_len, description_len, image_len);
+        println!("{:?}", encoding);
+
+        let (title_len_decoded, description_len_decoded, image_len_decoded) = MovieCollection::decode_length(&encoding);
+        println!("{:?}", title_len_decoded);
+        println!("{:?}", description_len_decoded);
+        println!("{:?}", image_len_decoded);
+
+        assert_eq!(title_len, title_len_decoded);
+        assert_eq!(description_len, description_len_decoded);
+        assert_eq!(image_len, image_len_decoded);
     }
 }
