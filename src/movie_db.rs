@@ -20,7 +20,8 @@ pub mod prelude {
 pub enum DbError {
     AlreadyExists(String),
     FileDoesNotExist(String),
-    LoadError
+    LoadError,
+    ReadError(&'static str),
 }
 
 impl Display for DbError {
@@ -29,6 +30,7 @@ impl Display for DbError {
             DbError::AlreadyExists(s) => write!(f, "Movie {s} already exists."),
             DbError::FileDoesNotExist(s) => write!(f, "File {s} does not exist."),
             DbError::LoadError => write!(f, "Error loading file."),
+            DbError::ReadError(s) => write!(f, "Error reading {s} from file."),
         }
     }
 }
@@ -202,60 +204,63 @@ impl MovieCollection {
         // We know if we have reached this point a file has been loaded
         let f = self.cur_file.as_mut().unwrap();
 
-        // Buffer for reading length tag for each record
-        let mut cur_length_buf = [0; 12];
-        // For creating the
+        // Buffer for reading the tag of each record
+        let mut cur_length_buf = [0; 16];
+
+        // For keeping track of where each record is located in the file
         let mut cur_pos = SeekFrom::Start(0);
+        let mut cur_pos_bytes = f.seek(cur_pos);
 
         if let Ok(_) = f.read_exact(&mut cur_length_buf) {
-            // Get length of encoded data id, title_len, description_len, image_len
-            // TODO: Fix this!
-            let (id, title_len, description_len, image_len) = MovieCollection::decode_length(&cur_length_buf);
-
-            // Read the bytes of the encoded movie
-            let mut title = Vec::with_capacity(title_len as usize);
-            let mut description = Vec::with_capacity(description_len as usize);
-            let mut image = Vec::with_capacity(image_len as usize);
-
-            if let Err(_) = f.read_exact(title.as_mut_slice()) {
-                return Err(DbError::LoadError);
+            let (id, title_len, description_len, image_len) = MovieCollection::decode_length_tag(&cur_length_buf);
+            let mut title_bytes = Vec::with_capacity(title_len as usize);
+            let mut description_bytes = Vec::with_capacity(description_len as usize);
+            let mut image_bytes = Vec::with_capacity(image_len as usize);
+            if let Err(e) = f.read_exact(title_bytes.as_mut_slice()) {
+                return Err(DbError::ReadError("title"));
             }
-            if let Err(_) = f.read_exact(description.as_mut_slice()) {
-                return Err(DbError::LoadError);
+            if let Err(e) = f.read_exact(description_bytes.as_mut_slice()) {
+                return Err(DbError::ReadError("description"));
             }
-            if let Err(_) = f.read_exact(image.as_mut_slice()) {
-                return Err(DbError::LoadError);
+            if let Err(e) = f.read_exact(image_bytes.as_mut_slice()) {
+                return Err(DbError::ReadError("image link"));
             }
-
+            self.insert_record(cur_pos_bytes.unwrap(), id, title_bytes, description_bytes, image_bytes)
         }
 
         Ok(())
     }
 
-    fn decode_length(bytes: &[u8; 12]) -> (u32, u32, u32) {
-        let (mut title_len, mut description_len, mut image_len) = (0, 0, 0);
+    fn decode_length_tag(bytes: &[u8; 16]) -> (u32, u32, u32, u32) {
+        let (mut id, mut title_len, mut description_len, mut image_len) = (0, 0, 0, 0);
         for i in 0..4 {
-            title_len ^= (bytes[i] as u32) << (i * 8);
+            id ^= (bytes[i] as u32) << (i * 8);
         }
         for i in 4..8 {
+            title_len ^= (bytes[i] as u32) << ((i % 4) * 8);
+        }
+        for i in 8..12 {
             description_len ^= (bytes[i] as u32) << ((i % 4) * 8);
         }
-        for i in 8..12 {
+        for i in 12..16 {
             image_len ^= (bytes[i] as u32) << ((i % 4) * 8);
         }
-        (title_len, description_len, image_len)
+        (id, title_len, description_len, image_len)
     }
 
-    fn encode_length(title_len: u32, description_len: u32, image_len: u32) -> [u8; 12] {
-        let mut bytes = [0_u8; 12];
+    fn encode_length_tag(id: u32, title_len: u32, description_len: u32, image_len: u32) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
         for i in 0..4 {
-            bytes[i] = ((title_len >> (i * 8)) as u8) & 0xff;
+            bytes[i] = ((id >> (i * 8)) & 0xff) as u8;
         }
         for i in 4..8 {
-            bytes[i] = ((description_len >> ((i % 4) * 8)) as u8) & 0xff;
+            bytes[i] = ((title_len >> ((i % 4) * 8)) & 0xff) as u8;
         }
         for i in 8..12 {
-            bytes[i] = ((image_len >> ((i % 4) * 8)) as u8) & 0xff;
+            bytes[i] = ((description_len >> ((i % 4) * 8)) & 0xff) as u8;
+        }
+        for i in 12..16 {
+            bytes[i] = ((image_len >> ((i % 4) * 8)) & 0xff) as u8;
         }
         bytes
     }
@@ -338,18 +343,21 @@ mod test {
 
     #[test]
     fn test_encode_decode_length() {
+        let id = 38928371;
         let title_len = 23697_u32;
         let description_len = 3292_u32;
         let image_len = 738_u32;
 
-        let encoding = MovieCollection::encode_length(title_len, description_len, image_len);
+        let encoding = MovieCollection::encode_length_tag(id, title_len, description_len, image_len);
         println!("{:?}", encoding);
 
-        let (title_len_decoded, description_len_decoded, image_len_decoded) = MovieCollection::decode_length(&encoding);
+        let (id_decoded, title_len_decoded, description_len_decoded, image_len_decoded) = MovieCollection::decode_length_tag(&encoding);
+        println!("{:?}", id_decoded);
         println!("{:?}", title_len_decoded);
         println!("{:?}", description_len_decoded);
         println!("{:?}", image_len_decoded);
 
+        assert_eq!(id, id_decoded);
         assert_eq!(title_len, title_len_decoded);
         assert_eq!(description_len, description_len_decoded);
         assert_eq!(image_len, image_len_decoded);
