@@ -204,15 +204,15 @@ impl MovieCollection {
 
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
         // TODO: Check if we already have an open file
-        self.cur_file = if let Ok(f) = OpenOptions::new().read(true).append(true).create(true).open(path) {
-            Some(BufReader::new(f))
+        let mut f = if let Ok(f) = OpenOptions::new().read(true).append(true).create(true).open(path) {
+            BufReader::new(f)
         } else {
             return Err(DbError::LoadError);
         };
 
         // load data from cur file into `self.trie` and `self.movie_map`
         // We know if we have reached this point a file has been loaded
-        let f = self.cur_file.as_mut().unwrap();
+        // let f = cur_file;
 
         // Buffer for reading the tag of each record
         let mut cur_tag_buf = [0; 17];
