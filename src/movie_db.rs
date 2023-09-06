@@ -7,8 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, BufReader, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::rc::Rc;
-
-
+use std::string::FromUtf8Error;
 
 
 pub mod prelude {
@@ -22,6 +21,7 @@ pub enum DbError {
     FileDoesNotExist(String),
     LoadError,
     ReadError(&'static str),
+    CreationError,
 }
 
 impl Display for DbError {
@@ -31,6 +31,7 @@ impl Display for DbError {
             DbError::FileDoesNotExist(s) => write!(f, "File {s} does not exist."),
             DbError::LoadError => write!(f, "Error loading file."),
             DbError::ReadError(s) => write!(f, "Error reading {s} from file."),
+            DbError::CreationError => write!(f, "Error creating record."),
         }
     }
 }
@@ -57,6 +58,13 @@ impl Movie {
             description,
             image,
         }
+    }
+    /// Method for building a `Movie` from `Vec`s of `u8`s
+    pub fn from_bytes(title: Vec<u8>, rating: u8, description: Vec<u8>, image: Vec<u8>) -> Result<Self, FromUtf8Error> {
+        let title = String::from_utf8(title)?;
+        let description = String::from_utf8(description)?;
+        let image = String::from_utf8(image)?;
+        Ok(Movie::new(title, rating, description, image))
     }
     /// Getter method for the movie's title
     pub fn get_title(&self) -> &String {
@@ -181,6 +189,7 @@ pub struct MovieCollection {
     trie: MovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
     cur_file: Option<BufReader<File>>,
+    cur_id: u32,
 }
 
 impl MovieCollection {
@@ -189,6 +198,7 @@ impl MovieCollection {
             trie: MovieTrie::new(),
             movie_map: HashMap::new(),
             cur_file: None,
+            cur_id: 0,
         }
     }
 
@@ -205,17 +215,20 @@ impl MovieCollection {
         let f = self.cur_file.as_mut().unwrap();
 
         // Buffer for reading the tag of each record
-        let mut cur_length_buf = [0; 16];
+        let mut cur_tag_buf = [0; 17];
 
         // For keeping track of where each record is located in the file
         let mut cur_pos = SeekFrom::Start(0);
-        let mut cur_pos_bytes = f.seek(cur_pos);
+        let mut cur_pos_res = f.seek(cur_pos);
 
-        if let Ok(_) = f.read_exact(&mut cur_length_buf) {
-            let (id, title_len, description_len, image_len) = MovieCollection::decode_length_tag(&cur_length_buf);
+        while let Ok(_) = f.read_exact(&mut cur_tag_buf) {
+            // Read tag from the buffer
+            let (id, title_len, description_len, image_len, rating) = MovieCollection::decode_tag(&cur_tag_buf);
+            // Allocate vectors for bytes to be read from file
             let mut title_bytes = Vec::with_capacity(title_len as usize);
             let mut description_bytes = Vec::with_capacity(description_len as usize);
             let mut image_bytes = Vec::with_capacity(image_len as usize);
+            // Read the bytes from file
             if let Err(e) = f.read_exact(title_bytes.as_mut_slice()) {
                 return Err(DbError::ReadError("title"));
             }
@@ -225,13 +238,44 @@ impl MovieCollection {
             if let Err(e) = f.read_exact(image_bytes.as_mut_slice()) {
                 return Err(DbError::ReadError("image link"));
             }
-            self.insert_record(cur_pos_bytes.unwrap(), id, title_bytes, description_bytes, image_bytes)
+            // Construct movie object
+            let movie = if let Ok(m) = Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes) {
+                m
+            } else {
+                return Err(DbError::CreationError)
+            };
+            // Ensure we have the cursor position of the current record
+            if let Ok(pos) = cur_pos_res {
+                self.add_record_from_file(pos, id, movie)?;
+            } else {
+                return Err(DbError::LoadError);
+            }
+            // Move current position in file for next record if any
+            cur_pos = SeekFrom::Current(0);
+            cur_pos_res = f.seek(cur_pos);
+            // Reset cur_tag_buf for next record
+            cur_tag_buf = [0; 17];
         }
 
         Ok(())
     }
 
-    fn decode_length_tag(bytes: &[u8; 16]) -> (u32, u32, u32, u32) {
+    /// Adds a movie to the `MovieCollection`. Takes a `Movie` struct as a parameter the movie to add to the collection.
+    /// Returns a `Result<(), `DbError`>.
+    // fn add_record(&mut self, movie: Movie) -> Result<(), DbError> {
+    //
+    // }
+
+    /// Private helper method, adds a record from a file.
+    fn add_record_from_file(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError>{
+        // First add movie title with `id` as `key` into `self.trie`
+        let title = movie.title.chars().collect::<Vec<char>>();
+        self.trie.insert(title, id)?;
+        self.movie_map.insert(id, (movie, pos));
+        Ok(())
+    }
+
+    fn decode_tag(bytes: &[u8; 17]) -> (u32, u32, u32, u32, u8) {
         let (mut id, mut title_len, mut description_len, mut image_len) = (0, 0, 0, 0);
         for i in 0..4 {
             id ^= (bytes[i] as u32) << (i * 8);
@@ -245,11 +289,12 @@ impl MovieCollection {
         for i in 12..16 {
             image_len ^= (bytes[i] as u32) << ((i % 4) * 8);
         }
-        (id, title_len, description_len, image_len)
+        let rating = bytes[16];
+        (id, title_len, description_len, image_len, rating)
     }
 
-    fn encode_length_tag(id: u32, title_len: u32, description_len: u32, image_len: u32) -> [u8; 16] {
-        let mut bytes = [0_u8; 16];
+    fn encode_tag(id: u32, title_len: u32, description_len: u32, image_len: u32, rating: u8) -> [u8; 17] {
+        let mut bytes = [0_u8; 17];
         for i in 0..4 {
             bytes[i] = ((id >> (i * 8)) & 0xff) as u8;
         }
@@ -262,6 +307,7 @@ impl MovieCollection {
         for i in 12..16 {
             bytes[i] = ((image_len >> ((i % 4) * 8)) & 0xff) as u8;
         }
+        bytes[16] = rating;
         bytes
     }
 }
@@ -347,19 +393,22 @@ mod test {
         let title_len = 23697_u32;
         let description_len = 3292_u32;
         let image_len = 738_u32;
+        let rating = 3_u8;
 
-        let encoding = MovieCollection::encode_length_tag(id, title_len, description_len, image_len);
+        let encoding = MovieCollection::encode_tag(id, title_len, description_len, image_len, rating);
         println!("{:?}", encoding);
 
-        let (id_decoded, title_len_decoded, description_len_decoded, image_len_decoded) = MovieCollection::decode_length_tag(&encoding);
+        let (id_decoded, title_len_decoded, description_len_decoded, image_len_decoded, rating_decoded) = MovieCollection::decode_tag(&encoding);
         println!("{:?}", id_decoded);
         println!("{:?}", title_len_decoded);
         println!("{:?}", description_len_decoded);
         println!("{:?}", image_len_decoded);
+        println!("{:?}", rating);
 
         assert_eq!(id, id_decoded);
         assert_eq!(title_len, title_len_decoded);
         assert_eq!(description_len, description_len_decoded);
         assert_eq!(image_len, image_len_decoded);
+        assert_eq!(rating, rating_decoded);
     }
 }
