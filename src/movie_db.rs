@@ -19,9 +19,11 @@ pub mod prelude {
 pub enum DbError {
     AlreadyExists(String),
     FileDoesNotExist(String),
+    NoFileLoaded,
     LoadError,
     ReadError(&'static str),
     CreationError,
+    CollectionFull,
 }
 
 impl Display for DbError {
@@ -32,6 +34,8 @@ impl Display for DbError {
             DbError::LoadError => write!(f, "Error loading file."),
             DbError::ReadError(s) => write!(f, "Error reading {s} from file."),
             DbError::CreationError => write!(f, "Error creating record."),
+            DbError::NoFileLoaded => write!(f, "No file has been loaded, unable to write record."),
+            DbError::CollectionFull => write!(f, "Collection is full, unable to write an additional record"),
         }
     }
 }
@@ -212,7 +216,6 @@ impl MovieCollection {
 
         // load data from cur file into `self.trie` and `self.movie_map`
         // We know if we have reached this point a file has been loaded
-        // let f = cur_file;
 
         // Buffer for reading the tag of each record
         let mut cur_tag_buf = [0; 17];
@@ -257,14 +260,33 @@ impl MovieCollection {
             cur_tag_buf = [0; 17];
         }
 
+        // Set `self.cur_file` to f
+        self.cur_file = Some(f);
+
         Ok(())
     }
 
     /// Adds a movie to the `MovieCollection`. Takes a `Movie` struct as a parameter the movie to add to the collection.
     /// Returns a `Result<(), `DbError`>.
-    // fn add_record(&mut self, movie: Movie) -> Result<(), DbError> {
-    //
-    // }
+    pub fn add_record(&mut self, movie: Movie) -> Result<(), DbError> {
+       if self.cur_file.is_none() {
+           return Err(DbError::NoFileLoaded);
+       }
+
+       let cur_file = self.cur_file.as_mut().unwrap();
+        let cur_pos_bytes = if let Ok(b) = cur_file.seek(SeekFrom::End(0)) {
+            b
+        } else {
+            return Err(DbError::LoadError)
+        };
+        if self.cur_id == u32::MAX {
+            return Err(DbError::CollectionFull);
+        }
+        self.cur_id += 1;
+        // Add record to collection
+        self.add_record_from_file(cur_pos_bytes, self.cur_id, movie)?;
+        Ok(())
+    }
 
     /// Private helper method, adds a record from a file.
     fn add_record_from_file(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError>{
