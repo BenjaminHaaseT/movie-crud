@@ -25,6 +25,7 @@ pub enum DbError {
     CreationError,
     CollectionFull,
     WriteError,
+    RecordDoesNotExist(u32),
 }
 
 impl Display for DbError {
@@ -38,6 +39,7 @@ impl Display for DbError {
             DbError::NoFileLoaded => write!(f, "No file has been loaded, unable to write record."),
             DbError::CollectionFull => write!(f, "Collection is full, unable to write an additional record"),
             DbError::WriteError => write!(f, "Error writing data."),
+            DbError::RecordDoesNotExist(id) => write!(f, "Record with id: {id} does not exist"),
         }
     }
 }
@@ -110,6 +112,7 @@ impl MovieTrie {
             root: Rc::new(RefCell::new(MovieTrieNode::new())),
         }
     }
+
     /// Searches for a given title in the Trie. Returns an `Option<u32>`,
     /// the return value will be the Some variant if the movie title exists, otherwise it will be the None variant.
     pub fn contains<T: Into<Vec<char>>>(&self, title: T) -> Option<u32> {
@@ -131,6 +134,7 @@ impl MovieTrie {
         }
         None
     }
+
     /// Insert a new movie `title` with a given `key` into the Trie
     /// The method is fallable since it is considered an error to enter the same movie twice into the database
     pub fn insert<T: Into<Vec<char>>>(&mut self, title: T, key: u32) -> Result<(), DbError> {
@@ -154,6 +158,7 @@ impl MovieTrie {
         curr.borrow_mut().key = Some(key);
         Ok(())
     }
+
     /// Helper function for delete method, not intended to be part of the public interface.
     fn delete_helper(
         &mut self,
@@ -177,6 +182,7 @@ impl MovieTrie {
             return (None, false);
         }
     }
+
     /// Delete a movie from the trie. The function returns an `Option<u32>` representing its unique key of the movie title. The
     /// return value will be the Some variant holding the `u32` that is the unique key for the given movie if it exists in the Trie,
     /// otherwise None will be returned.
@@ -194,7 +200,7 @@ impl MovieTrie {
 pub struct MovieCollection {
     trie: MovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
-    cur_file: Option<BufReader<File>>,
+    cur_file: Option<File>,
     cur_id: u32,
 }
 
@@ -214,9 +220,9 @@ impl MovieCollection {
     pub fn write_to_file(&mut self) -> Result<(), DbError> {
         // TODO: Find a way to write to file without corrupting the data, i.e do not lose the data in the collection...
         let mut cur_file = if let Some(f) = self.cur_file.take() {
-            BufWriter::new(f.into_inner())
+            BufWriter::new(f)
         } else {
-            return Err(DbError::NoFileLoaded)
+            return Err(DbError::NoFileLoaded);
         };
 
         for (id, (movie, _)) in &self.movie_map {
@@ -254,7 +260,6 @@ impl MovieCollection {
         } else {
             return Err(DbError::LoadError);
         };
-
         // load data from cur file into `self.trie` and `self.movie_map`
         // We know if we have reached this point a file has been loaded
 
@@ -302,8 +307,28 @@ impl MovieCollection {
         }
 
         // Set `self.cur_file` to f
-        self.cur_file = Some(f);
+        self.cur_file = Some(f.into_inner());
 
+        Ok(())
+    }
+
+    /// Searches for a record in the collection. Returns an `Option`, the return value will
+    /// be the None variant if the record does not exist, otherwise it will be the some variant with
+    /// the record's id represented as a `u32`.
+    pub fn find(&self, title: String) -> Option<u32> {
+        let title = title.chars().collect::<Vec<char>>();
+        self.trie.contains(title)
+    }
+
+    /// Deletes a record from the collection
+    pub fn delete(&mut self, id: u32) -> Result<(), DbError> {
+        if !self.movie_map.contains_key(&id) {
+            return Err(DbError::RecordDoesNotExist(id));
+        }
+        // We know the record exists at this point i.e safe to unwrap
+        let (movie, _) = self.movie_map.remove(&id).unwrap();
+        let title = movie.title.chars().collect::<Vec<char>>();
+        self.trie.delete(title);
         Ok(())
     }
 
@@ -338,6 +363,7 @@ impl MovieCollection {
         Ok(())
     }
 
+    /// Private helper method to decode the tag from a slice of bytes
     fn decode_tag(bytes: &[u8; 17]) -> (u32, u32, u32, u32, u8) {
         let (mut id, mut title_len, mut description_len, mut image_len) = (0, 0, 0, 0);
         for i in 0..4 {
@@ -356,6 +382,7 @@ impl MovieCollection {
         (id, title_len, description_len, image_len, rating)
     }
 
+    /// Private helper method to encode a tag as a slice of bytes from given movie attributes
     fn encode_tag(id: u32, title_len: u32, description_len: u32, image_len: u32, rating: u8) -> [u8; 17] {
         let mut bytes = [0_u8; 17];
         for i in 0..4 {
