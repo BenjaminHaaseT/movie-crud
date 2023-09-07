@@ -24,6 +24,7 @@ pub enum DbError {
     ReadError(&'static str),
     CreationError,
     CollectionFull,
+    WriteError,
 }
 
 impl Display for DbError {
@@ -36,6 +37,7 @@ impl Display for DbError {
             DbError::CreationError => write!(f, "Error creating record."),
             DbError::NoFileLoaded => write!(f, "No file has been loaded, unable to write record."),
             DbError::CollectionFull => write!(f, "Collection is full, unable to write an additional record"),
+            DbError::WriteError => write!(f, "Error writing data."),
         }
     }
 }
@@ -204,6 +206,45 @@ impl MovieCollection {
             cur_file: None,
             cur_id: 0,
         }
+    }
+
+    /// Public method to write all data contained in `self` to the current file.
+    /// Returns an error if there is no file loaded. After writing to the file, the `MovieCollection
+    /// will no longer contain any data, and will no longer hold a reference to a file.
+    pub fn write_to_file(&mut self) -> Result<(), DbError> {
+        // TODO: Find a way to write to file without corrupting the data, i.e do not lose the data in the collection...
+        let mut cur_file = if let Some(f) = self.cur_file.take() {
+            BufWriter::new(f.into_inner())
+        } else {
+            return Err(DbError::NoFileLoaded)
+        };
+
+        for (id, (movie, _)) in &self.movie_map {
+            let title = movie.title.as_bytes();
+            let description = movie.description.as_bytes();
+            let image = movie.image.as_bytes();
+            let encoded_tag = MovieCollection::encode_tag(
+                *id,
+                title.len() as u32,
+                description.len() as u32,
+                image.len() as u32,
+                movie.rating
+            );
+            if let Err(_) = cur_file.write(&encoded_tag) {
+                return Err(DbError::WriteError);
+            }
+            if let Err(_) = cur_file.write(title) {
+                return Err(DbError::WriteError);
+            }
+            if let Err(_) = cur_file.write(description) {
+                return Err(DbError::WriteError);
+            }
+            if let Err(_) = cur_file.write(image) {
+                return Err(DbError::WriteError);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
