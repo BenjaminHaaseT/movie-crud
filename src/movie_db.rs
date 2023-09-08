@@ -217,8 +217,9 @@ impl MovieCollection {
     /// Public method to write all data contained in `self` to the current file.
     /// Returns an error if there is no file loaded. After writing to the file, the `MovieCollection
     /// will no longer contain any data, and will no longer hold a reference to a file.
-    pub fn write_to_file(&mut self) -> Result<(), DbError> {
-        // TODO: Find a way to write to file without corrupting the data, i.e do not lose the data in the collection...
+    /// This call will overwrite the contents of the file contained in `self.cur_file`, all data held
+    /// currently by the `MovieCollection` will be removed as well.
+    pub fn write_to_file_flush(&mut self) -> Result<(), DbError> {
         let mut cur_file = if let Some(f) = self.cur_file.take() {
             BufWriter::new(f)
         } else {
@@ -236,33 +237,51 @@ impl MovieCollection {
                 image.len() as u32,
                 movie.rating
             );
-            if let Err(_) = cur_file.write(&encoded_tag) {
-                return Err(DbError::WriteError);
-            }
-            if let Err(_) = cur_file.write(title) {
-                return Err(DbError::WriteError);
-            }
-            if let Err(_) = cur_file.write(description) {
-                return Err(DbError::WriteError);
-            }
-            if let Err(_) = cur_file.write(image) {
+
+            // Collect all bytes into one vector to write to the file
+            let movie_bytes = encoded_tag.iter()
+                                                .map(|b| *b)
+                                                .chain(
+                                                    title.iter().map(|b| *b)
+                                                )
+                                                .chain(
+                                                    description.iter().map(|b| *b)
+                                                )
+                                                .chain(
+                                                    image.iter().map(|b| *b)
+                                                )
+                                                .collect::<Vec<u8>>();
+            if let Err(_) = cur_file.write(movie_bytes.as_slice()) {
+                // Reassign file in order to not lose potential data
+                // We know cur_file contains a valid `File` struct, so it is safe to unwrap
+                self.cur_file = Some(cur_file.into_inner().unwrap());
                 return Err(DbError::WriteError);
             }
         }
 
+        // We have successfully written all the data to the file,
+        // remove data from `self.trie` and `self.movie_map`
+        self.trie = MovieTrie::new();
+        self.movie_map = HashMap::new();
+        self.cur_id = 0;
         Ok(())
     }
 
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
-        // TODO: Check if we already have an open file
-        let mut f = if let Ok(f) = OpenOptions::new().read(true).append(true).create(true).open(path) {
+        // Check if we already have a current file open, if so write and flush the contents of the current movie collection.
+        if self.cur_file.is_some() {
+            self.write_to_file_flush()?;
+        }
+        let mut f = if let Ok(f) = OpenOptions::new().read(true).append(true).write(true).create(true).open(path) {
+            println!("File loaded successfully");
             BufReader::new(f)
         } else {
+            println!("In error block");
             return Err(DbError::LoadError);
         };
+
         // load data from cur file into `self.trie` and `self.movie_map`
         // We know if we have reached this point a file has been loaded
-
         // Buffer for reading the tag of each record
         let mut cur_tag_buf = [0; 17];
 
@@ -274,17 +293,19 @@ impl MovieCollection {
             // Read tag from the buffer
             let (id, title_len, description_len, image_len, rating) = MovieCollection::decode_tag(&cur_tag_buf);
             // Allocate vectors for bytes to be read from file
-            let mut title_bytes = Vec::with_capacity(title_len as usize);
-            let mut description_bytes = Vec::with_capacity(description_len as usize);
-            let mut image_bytes = Vec::with_capacity(image_len as usize);
+            let mut title_bytes = vec![0; title_len as usize];
+            let mut description_bytes = vec![0; description_len as usize];
+            let mut image_bytes = vec![0; image_len as usize];
+
             // Read the bytes from file
             if let Err(e) = f.read_exact(title_bytes.as_mut_slice()) {
+
                 return Err(DbError::ReadError("title"));
             }
-            if let Err(e) = f.read_exact(description_bytes.as_mut_slice()) {
+            if let Err(e) = f.read(description_bytes.as_mut_slice()) {
                 return Err(DbError::ReadError("description"));
             }
-            if let Err(e) = f.read_exact(image_bytes.as_mut_slice()) {
+            if let Err(e) = f.read(image_bytes.as_mut_slice()) {
                 return Err(DbError::ReadError("image link"));
             }
             // Construct movie object
@@ -295,6 +316,7 @@ impl MovieCollection {
             };
             // Ensure we have the cursor position of the current record
             if let Ok(pos) = cur_pos_res {
+                println!("{pos}");
                 self.add_record_from_file(pos, id, movie)?;
             } else {
                 return Err(DbError::LoadError);
@@ -500,5 +522,35 @@ mod test {
         assert_eq!(description_len, description_len_decoded);
         assert_eq!(image_len, image_len_decoded);
         assert_eq!(rating, rating_decoded);
+    }
+
+    #[test]
+    fn test_create_collection() {
+        let mut movie_collection = MovieCollection::new();
+        assert!(movie_collection.load("movies.txt").is_ok());
+        let movie1 = Movie::new("Lord of the Rings: The Fellowship of the Ring".to_string(), 5, "A brilliant movie".to_string(), "N/A".to_string());
+        let movie2 = Movie::new("Lord of the Rings: The Two Towers".to_string(), 5, "Another brilliant movie".to_string(), "N/A".to_string());
+        let movie3 = Movie::new("Lord of the Rings: The Return of the King".to_string(), 5, "A brilliant ending to the trilogy".to_string(), "N/a".to_string());
+        let movie4 = Movie::new("Borat".to_string(), 5, "A very funny movie".to_string(), "N/A".to_string());
+        assert!(movie_collection.add_record(movie1).is_ok());
+        assert!(movie_collection.add_record(movie2).is_ok());
+        assert!(movie_collection.add_record(movie3).is_ok());
+        assert!(movie_collection.add_record(movie4).is_ok());
+        assert!(movie_collection.write_to_file_flush().is_ok());
+    }
+
+    #[test]
+    fn test_load_collection() {
+        let mut movie_collection = MovieCollection::new();
+        assert!(movie_collection.load("movies.txt").is_ok());
+
+        assert!(movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).is_some());
+        let id = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).unwrap();
+        println!("{id}");
+
+        assert!(movie_collection.find("Borat".to_string()).is_some());
+        let id = movie_collection.find("Borat".to_string()).unwrap();
+        println!("{id}");
+
     }
 }
