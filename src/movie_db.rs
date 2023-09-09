@@ -67,6 +67,7 @@ impl Movie {
             image,
         }
     }
+
     /// Method for building a `Movie` from `Vec`s of `u8`s
     pub fn from_bytes(title: Vec<u8>, rating: u8, description: Vec<u8>, image: Vec<u8>) -> Result<Self, FromUtf8Error> {
         let title = String::from_utf8(title)?;
@@ -273,10 +274,9 @@ impl MovieCollection {
             self.write_to_file_flush()?;
         }
         let mut f = if let Ok(f) = OpenOptions::new().read(true).append(true).write(true).create(true).open(path) {
-            println!("File loaded successfully");
             BufReader::new(f)
         } else {
-            println!("In error block");
+            println!("File not loaded");
             return Err(DbError::LoadError);
         };
 
@@ -292,6 +292,7 @@ impl MovieCollection {
         while let Ok(_) = f.read_exact(&mut cur_tag_buf) {
             // Read tag from the buffer
             let (id, title_len, description_len, image_len, rating) = MovieCollection::decode_tag(&cur_tag_buf);
+
             // Allocate vectors for bytes to be read from file
             let mut title_bytes = vec![0; title_len as usize];
             let mut description_bytes = vec![0; description_len as usize];
@@ -299,7 +300,6 @@ impl MovieCollection {
 
             // Read the bytes from file
             if let Err(e) = f.read_exact(title_bytes.as_mut_slice()) {
-
                 return Err(DbError::ReadError("title"));
             }
             if let Err(e) = f.read(description_bytes.as_mut_slice()) {
@@ -312,13 +312,17 @@ impl MovieCollection {
             let movie = if let Ok(m) = Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes) {
                 m
             } else {
+                println!("Failed to create movie");
                 return Err(DbError::CreationError)
             };
             // Ensure we have the cursor position of the current record
             if let Ok(pos) = cur_pos_res {
-                println!("{pos}");
+                // Reset `self.cur_id` to max to ensure we always have `self.cur_id`
+                // at the next possible valid id
+                self.cur_id = u32::max(self.cur_id, id);
                 self.add_record_from_file(pos, id, movie)?;
             } else {
+                println!("Failed to get cursor position");
                 return Err(DbError::LoadError);
             }
             // Move current position in file for next record if any
@@ -330,7 +334,6 @@ impl MovieCollection {
 
         // Set `self.cur_file` to f
         self.cur_file = Some(f.into_inner());
-
         Ok(())
     }
 
@@ -551,6 +554,47 @@ mod test {
         assert!(movie_collection.find("Borat".to_string()).is_some());
         let id = movie_collection.find("Borat".to_string()).unwrap();
         println!("{id}");
+    }
 
+    #[test]
+    fn test_add_record_to_collection() {
+        let mut movie_collection = MovieCollection::new();
+        assert!(movie_collection.load("movies.txt").is_ok());
+
+        let movie = Movie::new("Fear and Loathing in Las Vegas".to_string(), 5, "An amazing movie".to_string(), "N/A".to_string());
+        assert!(movie_collection.add_record(movie).is_ok());
+
+        if let Some(id) =  movie_collection.find("Fear and Loathing in Las Vegas".to_string()) {
+            println!("Fear and Loathing in Las Vegas has ID: {id}");
+            assert!(true);
+        } else {
+            // Panic in this case
+            assert!(false);
+        }
+
+        // Ensure we still have other data loaded in the collection
+        if let Some(id) = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()) {
+            println!("Lord of the Rings: The Fellowship of the Ring has ID: {id}");
+            assert!(true);
+        } else {
+            assert!(false);
+        }
+
+        println!("{:?}", movie_collection.movie_map);
+    }
+
+    #[test]
+    fn test_delete_record_from_collection() {
+        let mut movie_collection = MovieCollection::new();
+        assert!(movie_collection.load("movies.txt".to_string()).is_ok());
+
+        assert!(movie_collection.find("Borat".to_string()).is_some());
+        if let Some(id) = movie_collection.find("Borat".to_string()) {
+            println!("ID: {id}");
+            assert!(movie_collection.delete(id).is_ok());
+        }
+
+        assert!(movie_collection.find("Borat".to_string()).is_none());
+        println!("{:?}", movie_collection.movie_map);
     }
 }
