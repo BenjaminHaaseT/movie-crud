@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::default::Default;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, BufReader, Read, Write, Seek, SeekFrom};
+use std::io::{ BufRead, BufWriter, BufReader, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::cell::UnsafeCell;
 use std::string::FromUtf8Error;
 
 
@@ -137,7 +139,7 @@ impl MovieTrie {
     }
 
     /// Insert a new movie `title` with a given `key` into the Trie
-    /// The method is fallable since it is considered an error to enter the same movie twice into the database
+    /// The method is able to fail, since it is considered an error to enter the same movie twice into the database
     pub fn insert<T: Into<Vec<char>>>(&mut self, title: T, key: u32) -> Result<(), DbError> {
         let title = title.into();
         let movie_display_title = String::from_iter(title.iter());
@@ -193,6 +195,94 @@ impl MovieTrie {
         let (key, _) = self.delete_helper(&title, cur_root, 0);
         key
     }
+}
+
+/// Struct for implementing a Trie that can be safely shared between threads
+#[derive(Debug)]
+struct ArcMovieTrieNode {
+    /// Contains all the characters in the current node mapping them to their respective `TrieNode`s if applicable.
+    children: HashMap<char, Arc<UnsafeCell<ArcMovieTrieNode>>>,
+    /// A key that represents the possibility that this node terminates a given string, if `self.key` is the `Some` variant
+    /// then the `u32` it holds represents the key for the given movie.
+    key: Option<u32>,
+}
+
+impl ArcMovieTrieNode {
+    pub fn new() -> Self {
+        ArcMovieTrieNode {
+            children: HashMap::new(),
+            key: None,
+        }
+    }
+}
+
+/// A struct that gives a memory safe interface for a MovieTrie, i.e. one that can be safely shared between threads.
+#[derive(Debug)]
+struct ArcMovieTrie {
+    root: Arc<UnsafeCell<ArcMovieTrieNode>>,
+}
+
+impl ArcMovieTrie {
+    /// Associated function for creating a new `ArcMovieTrie`
+    pub fn new() -> Self {
+        ArcMovieTrie { root: Arc::new(UnsafeCell::new(ArcMovieTrieNode::new())) }
+    }
+
+    /// Checks if `title` is contained in the trie.
+    /// Returns an `Option<u32>`, None if `title` is not contained within the trie, otherwise the Some
+    /// variant will be returned containing the `u32` that represents that titles unique id.
+    pub fn contains<T: Into<Vec<char>>>(&self, title: T) -> Option<u32> {
+        let title = title.into();
+        let mut cur_root = Arc::clone(&self.root);
+        let mut end_of_str = true;
+        for c in title {
+            let next_node = if let Some(neo) = unsafe {(&*cur_root.get()).children.get(&c)} {
+                Arc::clone(neo)
+            } else {
+                end_of_str = false;
+                break;
+            };
+            cur_root = next_node;
+        }
+        if end_of_str {
+            unsafe { return (&*cur_root.get()).key; }
+        }
+        None
+    }
+
+    /// Inserts a new `title` into the trie with a given `key` as it is id.
+    /// Note the method does not ensure that the `key` is unique, that must be ensured by the
+    /// user if that property is desired. The method can potentially fail, if `title` is already
+    /// in the trie. Returns a `Result<(), DbError>`.
+    pub fn insert<T: Into<Vec<char>>>(&mut self, title: T, key: u32) -> Result<(), DbError> {
+        let title = title.into();
+        let movie_title_display = String::from_iter(title.iter());
+        let mut cur_root = Arc::clone(&self.root);
+        for c in title {
+            let next_node = if unsafe { (&*cur_root.get()).children.contains_key(&c) } {
+                Arc::clone(
+                    unsafe {
+                        &(&*cur_root.get()).children[&c]
+                    }
+                )
+            } else {
+                let neo = Arc::new(UnsafeCell::new(ArcMovieTrieNode::new()));
+                unsafe { (*cur_root.get()).children.insert(c, neo.clone()); }
+                neo
+            };
+            cur_root = next_node;
+        }
+        // Check that we haven't already added to the trie
+        if unsafe { (&*cur_root.get()).key.is_some() } {
+            return Err(DbError::AlreadyExists(movie_title_display));
+        }
+        // Add `key` to the current root
+        unsafe { (*cur_root.get()).key = Some(key); }
+        Ok(())
+    }
+
+
+
 }
 
 /// A data structure for managing movies like a database.
