@@ -216,7 +216,8 @@ impl ArcMovieTrieNode {
     }
 }
 
-/// A struct that gives a memory safe interface for a MovieTrie, i.e. one that can be safely shared between threads.
+/// A struct that gives a memory safe interface for a MovieTrie that can be shared between threads.
+/// This struct is an implementation detail as part of a `DbLock`. The `DbLock` is what guarantees memory safety when this struct is employed.
 #[derive(Debug)]
 struct ArcMovieTrie {
     root: Arc<UnsafeCell<ArcMovieTrieNode>>,
@@ -281,8 +282,40 @@ impl ArcMovieTrie {
         Ok(())
     }
 
+    /// An implementation detail of `delete`
+    fn delete_helper(&mut self, title: &Vec<char>, i: usize, cur_root: Arc<UnsafeCell<ArcMovieTrieNode>>) -> (Option<u32>, bool) {
+        if i == title.len() {
+            match unsafe { ((*cur_root.get()).key, (*cur_root.get()).children.is_empty()) } {
+                (Some(k), true) => return (Some(k), true),
+                (Some(k), false) => return (Some(k), false),
+                (_, _) => return (None, false),
+            }
+        } else if  unsafe { (*cur_root.get()).children.contains_key(&title[i]) } {
+            let next_node = Arc::clone(unsafe { &(*cur_root.get()).children[&title[i]] } );
+            let (key, flag) = self.delete_helper(title, i + 1, next_node);
+            if flag {
+                unsafe { (*cur_root.get()).children.remove(&title[i]); }
+            }
+            return (
+                key,
+                if unsafe { (*cur_root.get()).children.is_empty() } {
+                    true
+                } else {
+                    false
+                }
+            );
+        }
+        (None, false)
+    }
 
-
+    /// Delete a movie from the trie. The function returns an `Option<u32>` representing its unique key of the movie title. The
+    /// return value will be the Some variant holding the `u32` that is the unique key for the given movie if it exists in the Trie,
+    /// otherwise None will be returned.
+    pub fn delete<T: Into<Vec<char>>>(&mut self, title: T) -> Option<u32> {
+        let title = title.into();
+        let mut cur_root = Arc::clone(&self.root);
+        self.delete_helper(&title, 0, cur_root).0
+    }
 }
 
 /// A data structure for managing movies like a database.
