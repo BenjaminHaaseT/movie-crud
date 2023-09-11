@@ -318,6 +318,127 @@ impl ArcMovieTrie {
     }
 }
 
+unsafe impl Send for ArcMovieTrie {}
+unsafe impl Sync for ArcMovieTrie {}
+
+/// A thread safe `MovieCollection` implementation. A `ArcMovieCollection` is an implementation detail of a `DbLock`.
+/// The object itself is only accessible through a `DbLock`. It is the `DbLock` that guarantees memory safety.
+struct ArcMovieCollection {
+    trie: ArcMovieTrie,
+    movie_map: HashMap<u32, (Movie, u64)>,
+    cur_file: Option<File>,
+    cur_id: u32,
+}
+
+impl ArcMovieCollection {
+    pub fn new() -> Self {
+        Self {
+            trie: ArcMovieTrie::new(),
+            movie_map: HashMap::new(),
+            cur_file: None,
+            cur_id: 0,
+        }
+    }
+
+    pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
+        // First check if we have a current file open
+        if self.cur_file.is_some() {
+            self.write_to_file_flush()?;
+        }
+        // Read the file from the provided path
+        let mut f = if let Ok(f) = OpenOptions::new().read(true).write(true).append(true).create(true).open(path) {
+            BufReader::new(f)
+        } else {
+            eprintln!("error loading file");
+            return Err(DbError::LoadError);
+        };
+
+        // For keeping track of where we are in the file
+        let mut tag_buf = [0_u8; 17];
+        let mut cur_pos = SeekFrom::Start(0);
+        let mut cur_pos_res = f.seek(cur_pos);
+
+        while let Ok(_) = f.read_exact(&mut tag_buf) {
+            // Read the tag for the current record
+            let (id, title_len, description_len, image_len, rating) = ArcMovieCollection::decode_tag(&tag_buf);
+            let mut title_bytes = vec![0_u8; title_len as usize];
+            let mut description_bytes = vec![0_u8, description_len as usize];
+            let mut image_bytes = vec![0_u8, image_len as usize];
+            // Read raw bytes into vectors
+            if let Err(_e) = f.read_exact(title_bytes.as_mut_slice()) {
+                return Err(DbError::ReadError("title"));
+            }
+            if let Err(_e) = f.read_exact(description_bytes.as_mut_slice()) {
+                return Err(DbError::ReadError("description"));
+            }
+            if let Err(_e) = f.read_exact(image_bytes.as_mut_slice()) {
+                return Err(DbError::ReadError("image"));
+            }
+            // Bytes read successfully, now create movie
+            let movie = if let Ok(m) = Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes) {
+                m
+            } else {
+                eprintln!("failed to create movie");
+                return Err(DbError::CreationError)
+            };
+            if let Ok(pos) = cur_pos_res {
+                // Reset `self.cur_id` to max to ensure we always have `self.cur_id`
+                // at the next possible valid id
+                self.cur_id = u32::max(self.cur_id, id);
+                self.add_record_from_file(pos, id, movie)?;
+            } else {
+                eprintln!("error getting current location in file");
+                return Err(DbError::LoadError);
+            }
+            // Move file cursor to next position
+            cur_pos = SeekFrom::Current(0);
+            cur_pos_res = f.seek(cur_pos);
+            // Reset tag buffer
+            tag_buf = [0_u8; 17];
+        }
+
+        Ok(())
+    }
+
+    /// Private helper method to decode the tag from a slice of bytes
+    fn decode_tag(bytes: &[u8; 17]) -> (u32, u32, u32, u32, u8) {
+        let (mut id, mut title_len, mut description_len, mut image_len) = (0, 0, 0, 0);
+        for i in 0..4 {
+            id ^= (bytes[i] as u32) << (i * 8);
+        }
+        for i in 4..8 {
+            title_len ^= (bytes[i] as u32) << ((i % 4) * 8);
+        }
+        for i in 8..12 {
+            description_len ^= (bytes[i] as u32) << ((i % 4) * 8);
+        }
+        for i in 12..16 {
+            image_len ^= (bytes[i] as u32) << ((i % 4) * 8);
+        }
+        let rating = bytes[16];
+        (id, title_len, description_len, image_len, rating)
+    }
+
+    /// Private helper method to encode a tag as a slice of bytes from given movie attributes
+    fn encode_tag(id: u32, title_len: u32, description_len: u32, image_len: u32, rating: u8) -> [u8; 17] {
+        let mut bytes = [0_u8; 17];
+        for i in 0..4 {
+            bytes[i] = ((id >> (i * 8)) & 0xff) as u8;
+        }
+        for i in 4..8 {
+            bytes[i] = ((title_len >> ((i % 4) * 8)) & 0xff) as u8;
+        }
+        for i in 8..12 {
+            bytes[i] = ((description_len >> ((i % 4) * 8)) & 0xff) as u8;
+        }
+        for i in 12..16 {
+            bytes[i] = ((image_len >> ((i % 4) * 8)) & 0xff) as u8;
+        }
+        bytes[16] = rating;
+        bytes
+    }
+}
+
 /// A data structure for managing movies like a database.
 /// Uses a `MovieTrie` for efficient lookups by title, as well finding results similar to a given search query.
 /// Uses a `HashMap` for mapping a movies id to its current location in the data base i.e file.
