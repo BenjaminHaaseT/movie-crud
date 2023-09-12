@@ -395,8 +395,8 @@ impl ArcMovieCollection {
             // Read the tag for the current record
             let (id, title_len, description_len, image_len, rating) = ArcMovieCollection::decode_tag(&tag_buf);
             let mut title_bytes = vec![0_u8; title_len as usize];
-            let mut description_bytes = vec![0_u8, description_len as usize];
-            let mut image_bytes = vec![0_u8, image_len as usize];
+            let mut description_bytes = vec![0_u8; description_len as usize];
+            let mut image_bytes = vec![0_u8; image_len as usize];
             // Read raw bytes into vectors
             if let Err(_e) = f.read_exact(title_bytes.as_mut_slice()) {
                 return Err(DbError::ReadError("title"));
@@ -429,7 +429,27 @@ impl ArcMovieCollection {
             // Reset tag buffer
             tag_buf = [0_u8; 17];
         }
+        // Set the current file of the collection
+        self.cur_file = Some(f.into_inner());
+        Ok(())
+    }
 
+    /// Method for finding if a movie exists in the current collection. Returns an `Option<u32>`,
+    /// None if the record does not exist, otherwise Some.
+    pub fn find(&self, title: String) -> Option<u32> {
+        let title = title.chars().collect::<Vec<char>>();
+        self.trie.contains(title)
+    }
+
+    /// Method for deleting a movie from the collection. Returns a `Result<(), DbError>`, note it is considered an error to try and
+    /// delete a movie that is not currently in the collection.
+    pub fn delete(&mut self, id: u32) -> Result<(), DbError> {
+        if !self.movie_map.contains_key(&id) {
+            return Err(DbError::RecordDoesNotExist(id));
+        }
+        let (movie, _) = self.movie_map.remove(&id).unwrap();
+        let title = movie.title.chars().collect::<Vec<char>>();
+        self.trie.delete(title);
         Ok(())
     }
 
@@ -449,8 +469,8 @@ impl ArcMovieCollection {
             return Err(DbError::LoadError)
         };
         // Increment id for new record
-        self.id += 1;
-        self.add_record_from_file(byte_pos, self.id, movie)
+        self.cur_id += 1;
+        self.add_record_from_file(byte_pos, self.cur_id, movie)
     }
 
     /// Private implementation detail, essentially a helper function for writing records to the collection
@@ -832,6 +852,7 @@ mod test {
         assert_eq!(rating, rating_decoded);
     }
 
+
     #[test]
     fn test_create_collection() {
         let mut movie_collection = MovieCollection::new();
@@ -892,6 +913,77 @@ mod test {
     fn test_delete_record_from_collection() {
         let mut movie_collection = MovieCollection::new();
         assert!(movie_collection.load("movies.txt".to_string()).is_ok());
+
+        assert!(movie_collection.find("Borat".to_string()).is_some());
+        if let Some(id) = movie_collection.find("Borat".to_string()) {
+            println!("ID: {id}");
+            assert!(movie_collection.delete(id).is_ok());
+        }
+
+        assert!(movie_collection.find("Borat".to_string()).is_none());
+        println!("{:?}", movie_collection.movie_map);
+    }
+
+    #[test]
+    fn test_create_collection_arc() {
+        let mut movie_collection = ArcMovieCollection::new();
+        assert!(movie_collection.load("movies_arc.txt").is_ok());
+        let movie1 = Movie::new("Lord of the Rings: The Fellowship of the Ring".to_string(), 5, "A brilliant movie".to_string(), "N/A".to_string());
+        let movie2 = Movie::new("Lord of the Rings: The Two Towers".to_string(), 5, "Another brilliant movie".to_string(), "N/A".to_string());
+        let movie3 = Movie::new("Lord of the Rings: The Return of the King".to_string(), 5, "A brilliant ending to the trilogy".to_string(), "N/a".to_string());
+        let movie4 = Movie::new("Borat".to_string(), 5, "A very funny movie".to_string(), "N/A".to_string());
+        assert!(movie_collection.add_record(movie1).is_ok());
+        assert!(movie_collection.add_record(movie2).is_ok());
+        assert!(movie_collection.add_record(movie3).is_ok());
+        assert!(movie_collection.add_record(movie4).is_ok());
+        assert!(movie_collection.write_to_file_flush().is_ok());
+    }
+
+    #[test]
+    fn test_load_collection_arc() {
+        let mut movie_collection = ArcMovieCollection::new();
+        assert!(movie_collection.load("movies_arc.txt").is_ok());
+
+        assert!(movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).is_some());
+        let id = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).unwrap();
+        println!("{id}");
+
+        assert!(movie_collection.find("Borat".to_string()).is_some());
+        let id = movie_collection.find("Borat".to_string()).unwrap();
+        println!("{id}");
+    }
+
+    #[test]
+    fn test_add_record_to_collection_arc() {
+        let mut movie_collection = ArcMovieCollection::new();
+        assert!(movie_collection.load("movies_arc.txt").is_ok());
+
+        let movie = Movie::new("Fear and Loathing in Las Vegas".to_string(), 5, "An amazing movie".to_string(), "N/A".to_string());
+        assert!(movie_collection.add_record(movie).is_ok());
+
+        if let Some(id) =  movie_collection.find("Fear and Loathing in Las Vegas".to_string()) {
+            println!("Fear and Loathing in Las Vegas has ID: {id}");
+            assert!(true);
+        } else {
+            // Panic in this case
+            assert!(false);
+        }
+
+        // Ensure we still have other data loaded in the collection
+        if let Some(id) = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()) {
+            println!("Lord of the Rings: The Fellowship of the Ring has ID: {id}");
+            assert!(true);
+        } else {
+            assert!(false);
+        }
+
+        println!("{:?}", movie_collection.movie_map);
+    }
+
+    #[test]
+    fn test_delete_record_from_collection_arc() {
+        let mut movie_collection = ArcMovieCollection::new();
+        assert!(movie_collection.load("movies_arc.txt".to_string()).is_ok());
 
         assert!(movie_collection.find("Borat".to_string()).is_some());
         if let Some(id) = movie_collection.find("Borat".to_string()) {
