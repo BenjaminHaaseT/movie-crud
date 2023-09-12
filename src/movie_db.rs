@@ -340,6 +340,39 @@ impl ArcMovieCollection {
         }
     }
 
+    pub fn write_to_file_flush(&mut self) -> Result<(), DbError> {
+        let mut f = if let Some(f) = self.cur_file.take() {
+            BufWriter::new(f)
+        } else {
+            return Err(DbError::NoFileLoaded)
+        };
+        // Write data to file
+        for (id, (movie, _)) in &self.movie_map {
+            let title_bytes = movie.title.as_bytes();
+            let description_bytes = movie.description.as_bytes();
+            let image_bytes = movie.image.as_bytes();
+            let rating = movie.rating;
+            let tag = ArcMovieCollection::encode_tag(
+                *id,
+                title_bytes.len() as u32,
+                description_bytes.len() as u32,
+                image_bytes.len() as u32,
+                rating,
+            );
+            let movie_bytes = tag.iter().map(|b| *b)
+                .chain(title_bytes.iter().map(|b| *b))
+                .chain(description_bytes.iter().map(|b| *b))
+                .chain(image_bytes.iter().map(|b| *b))
+                .collect::<Vec<u8>>();
+            if let Err(_) = f.write(&movie_bytes) {
+                // Save the file handle
+                self.cur_file = Some(f.into_inner().unwrap());
+                return Err(DbError::WriteError);
+            }
+        }
+        Ok(())
+    }
+
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<(), DbError> {
         // First check if we have a current file open
         if self.cur_file.is_some() {
@@ -397,6 +430,35 @@ impl ArcMovieCollection {
             tag_buf = [0_u8; 17];
         }
 
+        Ok(())
+    }
+
+    /// Method for adding an arbitrary record to the collection. Takes a `Movie` and returns a result
+    /// Ok(()) if the movie was added successfully, and Err if the movie was already contained in the collection.
+    pub fn add_record(&mut self, movie: Movie) -> Result<(), DbError> {
+        // Get a reference to the file handle currently loaded
+        let mut f = if let Some( f) = self.cur_file.as_mut() {
+            f
+        } else {
+            return Err(DbError::NoFileLoaded)
+        };
+        // Get byte position in current file from the end
+        let byte_pos = if let Ok(b) = f.seek(SeekFrom::End(0)) {
+            b
+        } else {
+            return Err(DbError::LoadError)
+        };
+        // Increment id for new record
+        self.id += 1;
+        self.add_record_from_file(byte_pos, self.id, movie)
+    }
+
+    /// Private implementation detail, essentially a helper function for writing records to the collection
+    fn add_record_from_file(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError> {
+        let title = movie.title.chars().collect::<Vec<char>>();
+        // Add movie to trie
+        self.trie.insert(title, id)?;
+        self.movie_map.insert(id, (movie, pos));
         Ok(())
     }
 
@@ -619,8 +681,7 @@ impl MovieCollection {
         }
         self.cur_id += 1;
         // Add record to collection
-        self.add_record_from_file(cur_pos_bytes, self.cur_id, movie)?;
-        Ok(())
+        self.add_record_from_file(cur_pos_bytes, self.cur_id, movie)
     }
 
     /// Private helper method, adds a record from a file.
