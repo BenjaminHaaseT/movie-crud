@@ -577,6 +577,9 @@ impl DbLock {
     }
 }
 
+unsafe impl Send for DbLock {}
+unsafe impl Sync for DbLock {}
+
 pub struct DbLockGuard<'a> {
     dblock: &'a DbLock,
 }
@@ -837,6 +840,7 @@ impl MovieCollection {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::thread;
 
     #[test]
     fn test_movie_trie_new() {
@@ -1075,5 +1079,62 @@ mod test {
 
         assert!(movie_collection.find("Borat".to_string()).is_none());
         println!("{:?}", movie_collection.movie_map);
+    }
+
+    #[test]
+    fn test_db_lock_creation() {
+        let dblock = DbLock::new();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_dblock_in_threads() {
+        let dblock = DbLock::new();
+        assert!(dblock.lock().load("test_movies.txt").is_ok());
+        println!("Loaded test_movies.txt successfully.");
+
+        thread::scope(|s| {
+            s.spawn(|| {
+                for i in 1..=1000 {
+                    let movie = Movie::new(
+                        format!("Avengers {i}"),
+                        0,
+                        String::from("A terrible movie"),
+                        String::from("N/A"),
+                    );
+                    assert!(dblock.lock().add_record(movie).is_ok());
+                }
+            });
+            s.spawn(|| {
+                for i in 1..=1000 {
+                    let movie = Movie::new(
+                        format!("Disney Star Wars {i}"),
+                        0,
+                        String::from("A terrible movie"),
+                        String::from("N/A"),
+                    );
+                    assert!(dblock.lock().add_record(movie).is_ok());
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn test_dblock_reading_in_threads() {
+        let dblock = DbLock::new();
+        assert!(dblock.lock().load("test_movies.txt").is_ok());
+
+        thread::scope(|s| {
+            s.spawn(|| {
+                for i in 1..=1000 {
+                    assert!(dblock.lock().find(format!("Avengers {i}")).is_some());
+                }
+            });
+            s.spawn(|| {
+                for i in 1..=1000 {
+                    assert!(dblock.lock().find(format!("Disney Star Wars {i}")).is_some());
+                }
+            });
+        });
     }
 }
