@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::cell::UnsafeCell;
 use std::string::FromUtf8Error;
+use std::ops::{Deref, DerefMut};
 use atomic_wait::{wait, wake_one, wake_all};
 
 
@@ -327,7 +328,7 @@ unsafe impl Sync for ArcMovieTrie {}
 
 /// A thread safe `MovieCollection` implementation. A `ArcMovieCollection` is an implementation detail of a `DbLock`.
 /// The object itself is only accessible through a `DbLock`. It is the `DbLock` that guarantees thread/memory safety.
-struct ArcMovieCollection {
+pub struct ArcMovieCollection {
     trie: ArcMovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
     cur_file: Option<File>,
@@ -555,7 +556,7 @@ unsafe impl Send for ArcMovieCollection {}
 /// thread/memory safety guarantees for the `ArcMovieCollection` struct.
 pub struct DbLock {
     /// Holds the collection of movie data.
-    collection: ArcMovieCollection,
+    collection: UnsafeCell<ArcMovieCollection>,
     /// A flag, 0: unlocked,  1: locked
     state: AtomicU32,
 }
@@ -563,7 +564,7 @@ pub struct DbLock {
 impl DbLock {
     pub fn new() -> Self {
         Self {
-            collection: ArcMovieCollection::new(),
+            collection: UnsafeCell::new(ArcMovieCollection::new()),
             state: AtomicU32::new(0),
         }
     }
@@ -578,6 +579,27 @@ impl DbLock {
 
 pub struct DbLockGuard<'a> {
     dblock: &'a DbLock,
+}
+
+impl Deref for DbLockGuard<'_> {
+    type Target = ArcMovieCollection;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.dblock.collection.get() }
+    }
+}
+
+impl DerefMut for DbLockGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.dblock.collection.get() }
+    }
+}
+
+impl Drop for DbLockGuard<'_> {
+    fn drop(&mut self) {
+        // Release lock, Release ordering matches Acquire for locking
+        self.dblock.state.store(0, Release);
+        wake_one(&self.dblock.state);
+    }
 }
 
 
