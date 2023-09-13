@@ -8,8 +8,12 @@ use std::io::{ BufRead, BufWriter, BufReader, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::cell::UnsafeCell;
 use std::string::FromUtf8Error;
+use atomic_wait::{wait, wake_one, wake_all};
+
 
 
 pub mod prelude {
@@ -225,7 +229,7 @@ struct ArcMovieTrie {
 
 impl ArcMovieTrie {
     /// Associated function for creating a new `ArcMovieTrie`
-    pub fn new() -> Self {
+    fn new() -> Self {
         ArcMovieTrie { root: Arc::new(UnsafeCell::new(ArcMovieTrieNode::new())) }
     }
 
@@ -331,7 +335,7 @@ struct ArcMovieCollection {
 }
 
 impl ArcMovieCollection {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             trie: ArcMovieTrie::new(),
             movie_map: HashMap::new(),
@@ -341,9 +345,9 @@ impl ArcMovieCollection {
     }
 
     /// Helper method for writing movie information to the file
-    fn write_record(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError> {
-
-    }
+    // fn write_record(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError> {
+    //
+    // }
 
     pub fn write_to_file_flush(&mut self) -> Result<(), DbError> {
         let mut f = if let Some(f) = self.cur_file.take() {
@@ -544,6 +548,38 @@ impl ArcMovieCollection {
         bytes
     }
 }
+
+unsafe impl Send for ArcMovieCollection {}
+
+/// A lock for interacting with a `ArcMovieCollection` in a thread safe way i.e. provides the
+/// thread/memory safety guarantees for the `ArcMovieCollection` struct.
+pub struct DbLock {
+    /// Holds the collection of movie data.
+    collection: ArcMovieCollection,
+    /// A flag, 0: unlocked,  1: locked
+    state: AtomicU32,
+}
+
+impl DbLock {
+    pub fn new() -> Self {
+        Self {
+            collection: ArcMovieCollection::new(),
+            state: AtomicU32::new(0),
+        }
+    }
+
+    pub fn lock(&self) -> DbLockGuard {
+        while let Err(flag) = self.state.compare_exchange_weak(0, 1, Acquire, Relaxed) {
+            wait(&self.state, flag);
+        }
+        DbLockGuard { dblock: self }
+    }
+}
+
+pub struct DbLockGuard<'a> {
+    dblock: &'a DbLock,
+}
+
 
 /// A data structure for managing movies like a database.
 /// Uses a `MovieTrie` for efficient lookups by title, as well finding results similar to a given search query.

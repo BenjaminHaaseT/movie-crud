@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 use std::error::Error;
 use actix_web::{http, web, App, HttpRequest, HttpResponse, HttpServer, get, post};
 use movie_db::prelude::*;
+use atomic_wait::{wake_one, wait, wake_all};
 
 
 #[derive(Debug)]
