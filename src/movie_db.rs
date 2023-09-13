@@ -217,7 +217,7 @@ impl ArcMovieTrieNode {
 }
 
 /// A struct that gives a memory safe interface for a MovieTrie that can be shared between threads.
-/// This struct is an implementation detail as part of a `DbLock`. The `DbLock` is what guarantees memory safety when this struct is employed.
+/// This struct is an implementation detail as part of a `DbLock`. The `DbLock` is what guarantees thread/memory safety when this struct is employed.
 #[derive(Debug)]
 struct ArcMovieTrie {
     root: Arc<UnsafeCell<ArcMovieTrieNode>>,
@@ -322,7 +322,7 @@ unsafe impl Send for ArcMovieTrie {}
 unsafe impl Sync for ArcMovieTrie {}
 
 /// A thread safe `MovieCollection` implementation. A `ArcMovieCollection` is an implementation detail of a `DbLock`.
-/// The object itself is only accessible through a `DbLock`. It is the `DbLock` that guarantees memory safety.
+/// The object itself is only accessible through a `DbLock`. It is the `DbLock` that guarantees thread/memory safety.
 struct ArcMovieCollection {
     trie: ArcMovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
@@ -338,6 +338,11 @@ impl ArcMovieCollection {
             cur_file: None,
             cur_id: 0,
         }
+    }
+
+    /// Helper method for writing movie information to the file
+    fn write_record(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError> {
+
     }
 
     pub fn write_to_file_flush(&mut self) -> Result<(), DbError> {
@@ -470,6 +475,25 @@ impl ArcMovieCollection {
         };
         // Increment id for new record
         self.cur_id += 1;
+        // Write new record to file
+        let title_bytes = movie.title.as_bytes();
+        let description_bytes = movie.description.as_bytes();
+        let image_bytes = movie.description.as_bytes();
+        let rating = movie.rating;
+        let tag = MovieCollection::encode_tag(
+            self.cur_id,
+            title_bytes.len() as u32,
+            description_bytes.len() as u32,
+            image_bytes.len() as u32, rating
+        );
+        let movie_bytes = tag.iter().map(|b| *b)
+            .chain(title_bytes.iter().map(|b| *b))
+            .chain(description_bytes.iter().map(|b| *b))
+            .chain(image_bytes.iter().map(|b| *b))
+            .collect::<Vec<u8>>();
+        if let Err(_) = f.write(movie_bytes.as_slice()) {
+            return Err(DbError::WriteError);
+        }
         self.add_record_from_file(byte_pos, self.cur_id, movie)
     }
 
