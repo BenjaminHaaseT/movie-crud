@@ -563,6 +563,7 @@ pub struct DbLock {
 
 /// Essentially a 3 state mutex that allows efficient and thread safe access to a `ArcMovieCollection` struct.
 impl DbLock {
+    /// Associated method for creating a new `DbLock`
     pub fn new() -> Self {
         Self {
             collection: UnsafeCell::new(ArcMovieCollection::new()),
@@ -571,6 +572,15 @@ impl DbLock {
             /// 2: locked with waiting threads
             state: AtomicU32::new(0),
         }
+    }
+    /// Associated method creating a `DbLock` with a preloaded file. The method can potentially fail,
+    /// and therefore will return an error on failure.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
+        let mut collection = ArcMovieCollection::new();
+        collection.load(path)?;
+        Ok(
+            Self { collection: UnsafeCell::new(collection), state: AtomicU32::new(0) }
+        )
     }
 
     /// Locks the `DbLock` and returns the `DbLockGuard` for interacting with the `ArcMovieCollection`.

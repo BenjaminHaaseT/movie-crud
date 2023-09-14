@@ -24,20 +24,14 @@ impl Display for UserError {
 impl Error for UserError {}
 
 
-#[post("/add-movie")]
-async fn add_movie_handler(collection: web::Data<Mutex<MovieCollection>>, movie: web::Json<Movie>) -> HttpResponse {
-    // Get lock on collection struct
-    // let mut guard = match collection.lock() {
-    //     Ok(g) => g,
-    //     Err(e) => return HttpResponse::from_error(UserError::InternalError),
-    // };
-    // // Add movie to collection
-    // let title = movie.get_title().to_owned();
-    // match guard.add_record(movie.into_inner()) {
-    //     Ok(()) => HttpResponse::Ok().body(format!("{title} added successfully")),
-    //     Err(e) => HttpResponse::from_error(e),
-    // }
 
+#[post("/add-movie")]
+async fn add_movie_handler(collection: web::Data<DbLock>, movie: web::Json<Movie>) -> HttpResponse {
+    // Lock the collection struct
+    let mut guard = collection.lock();
+    if let Err(e) = guard.add_record(movie.into_inner()) {
+        return HttpResponse::from_error(UserError::InternalError);
+    }
     HttpResponse::Ok().body("OK")
 }
 
@@ -46,24 +40,21 @@ async fn main() -> std::io::Result<()> {
     // Address, port
     let address = "127.0.0.1";
     let port = 8080;
-
-    // // Create movie collection struct
-    // let mut movie_collection = MovieCollection::new();
-    // if let Err(e) = movie_collection.load("db/db.txt") {
-    //     eprintln!("{e}");
-    //     std::process::exit(1);
-    // }
-    // let app_state = web::Data::new(Mutex::new(movie_collection));
-    //
-    // HttpServer::new(move || {
-    //     App::new().service(
-    //         web::resource("/")
-    //             .app_data(app_state.clone())
-    //     )
-    // })
-    //     .bind((address, port))?
-    //     .run()
-    //     .await
-
-    Ok(())
+    // Create Dblock
+    let dblock = if let Ok(lock) = DbLock::load("db/db.txt") {
+        lock
+    } else {
+        eprintln!("error loading file into lock");
+        std::process::exit(1);
+    };
+    // Instantiate application data
+    let app_data = web::Data::new(dblock);
+    HttpServer::new(move || {
+        App::new()
+            .app_data(app_data.clone())
+            .service(add_movie_handler)
+    })
+        .bind((address, port))?
+        .run()
+        .await
 }
