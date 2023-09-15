@@ -451,6 +451,15 @@ impl ArcMovieCollection {
         self.trie.contains(title)
     }
 
+    /// Method for getting a movie based on an id
+    pub fn get_movie(&self, id: u32) -> Option<&Movie> {
+        if let Some((movie, _)) = self.movie_map.get(&id) {
+            Some(movie)
+        } else {
+            None
+        }
+    }
+
     /// Method for deleting a movie from the collection. Returns a `Result<(), DbError>`, note it is considered an error to try and
     /// delete a movie that is not currently in the collection.
     pub fn delete(&mut self, id: u32) -> Result<(), DbError> {

@@ -2,8 +2,9 @@ mod movie_db;
 use std::sync::{Mutex, Arc};
 use std::fmt::{Display, Formatter};
 use std::error::Error;
-use actix_web::{http, web, App, HttpRequest, HttpResponse, HttpServer, get, post, Responder, http::header::ContentType};
+use actix_web::{http, web, App, error, HttpRequest, HttpResponse, HttpServer, get, post, Responder, http::header::{ContentType}, ResponseError,};
 use actix_web::body::BoxBody;
+use actix_web::http::StatusCode;
 use movie_db::prelude::*;
 use serde_json;
 use atomic_wait::{wake_one, wait, wake_all};
@@ -18,6 +19,15 @@ impl Responder for Movie {
     }
 }
 
+impl Responder for &Movie {
+    type Body = BoxBody;
+    fn respond_to(self, req: &HttpRequest) -> HttpResponse<Self::Body> {
+        let body = serde_json::to_string(self).unwrap();
+        HttpResponse::Ok()
+            .content_type(ContentType::json())
+            .body(body)
+    }
+}
 
 #[derive(Debug)]
 enum UserError {
@@ -36,6 +46,21 @@ impl Display for UserError {
 }
 
 impl Error for UserError {}
+impl ResponseError for UserError {
+    fn error_response(&self) -> HttpResponse<BoxBody> {
+        HttpResponse::build(self.status_code())
+            .content_type(ContentType::html())
+            .body(self.to_string())
+
+    }
+
+    fn status_code(&self) -> StatusCode {
+        match self {
+            UserError::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
+            UserError::NotFound(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+}
 
 
 /// Handler that allows users of api to add a movie to the collection
@@ -61,7 +86,6 @@ async fn find_movie(collection: web::Data<DbLock>, query_title: web::Query<Strin
         None => Err(UserError::NotFound(title))
     }
 }
-
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
