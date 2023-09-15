@@ -52,7 +52,7 @@ impl Display for DbError {
 }
 
 /// A struct that represents a single movie.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Movie {
     /// The rating of the movie out of five stars given by the user.
     rating: u8,
