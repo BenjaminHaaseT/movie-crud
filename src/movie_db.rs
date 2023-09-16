@@ -1,21 +1,19 @@
+use atomic_wait::{wait, wake_all, wake_one};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::default::Default;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::io::{ BufRead, BufWriter, BufReader, Read, Write, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::cell::UnsafeCell;
 use std::string::FromUtf8Error;
-use std::ops::{Deref, DerefMut};
-use atomic_wait::{wait, wake_one, wake_all};
-
-
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::Arc;
 
 pub mod prelude {
     pub use super::*;
@@ -44,7 +42,10 @@ impl Display for DbError {
             DbError::ReadError(s) => write!(f, "Error reading {s} from file."),
             DbError::CreationError => write!(f, "Error creating record."),
             DbError::NoFileLoaded => write!(f, "No file has been loaded, unable to write record."),
-            DbError::CollectionFull => write!(f, "Collection is full, unable to write an additional record"),
+            DbError::CollectionFull => write!(
+                f,
+                "Collection is full, unable to write an additional record"
+            ),
             DbError::WriteError => write!(f, "Error writing data."),
             DbError::RecordDoesNotExist(id) => write!(f, "Record with id: {id} does not exist"),
         }
@@ -76,7 +77,12 @@ impl Movie {
     }
 
     /// Method for building a `Movie` from `Vec`s of `u8`s
-    pub fn from_bytes(title: Vec<u8>, rating: u8, description: Vec<u8>, image: Vec<u8>) -> Result<Self, FromUtf8Error> {
+    pub fn from_bytes(
+        title: Vec<u8>,
+        rating: u8,
+        description: Vec<u8>,
+        image: Vec<u8>,
+    ) -> Result<Self, FromUtf8Error> {
         let title = String::from_utf8(title)?;
         let description = String::from_utf8(description)?;
         let image = String::from_utf8(image)?;
@@ -231,7 +237,9 @@ struct ArcMovieTrie {
 impl ArcMovieTrie {
     /// Associated function for creating a new `ArcMovieTrie`
     fn new() -> Self {
-        ArcMovieTrie { root: Arc::new(UnsafeCell::new(ArcMovieTrieNode::new())) }
+        ArcMovieTrie {
+            root: Arc::new(UnsafeCell::new(ArcMovieTrieNode::new())),
+        }
     }
 
     /// Checks if `title` is contained in the trie.
@@ -242,7 +250,7 @@ impl ArcMovieTrie {
         let mut cur_root = Arc::clone(&self.root);
         let mut end_of_str = true;
         for c in title {
-            let next_node = if let Some(neo) = unsafe {(&*cur_root.get()).children.get(&c)} {
+            let next_node = if let Some(neo) = unsafe { (&*cur_root.get()).children.get(&c) } {
                 Arc::clone(neo)
             } else {
                 end_of_str = false;
@@ -251,7 +259,9 @@ impl ArcMovieTrie {
             cur_root = next_node;
         }
         if end_of_str {
-            unsafe { return (&*cur_root.get()).key; }
+            unsafe {
+                return (&*cur_root.get()).key;
+            }
         }
         None
     }
@@ -266,14 +276,12 @@ impl ArcMovieTrie {
         let mut cur_root = Arc::clone(&self.root);
         for c in title {
             let next_node = if unsafe { (&*cur_root.get()).children.contains_key(&c) } {
-                Arc::clone(
-                    unsafe {
-                        &(&*cur_root.get()).children[&c]
-                    }
-                )
+                Arc::clone(unsafe { &(&*cur_root.get()).children[&c] })
             } else {
                 let neo = Arc::new(UnsafeCell::new(ArcMovieTrieNode::new()));
-                unsafe { (*cur_root.get()).children.insert(c, neo.clone()); }
+                unsafe {
+                    (*cur_root.get()).children.insert(c, neo.clone());
+                }
                 neo
             };
             cur_root = next_node;
@@ -283,23 +291,32 @@ impl ArcMovieTrie {
             return Err(DbError::AlreadyExists(movie_title_display));
         }
         // Add `key` to the current root
-        unsafe { (*cur_root.get()).key = Some(key); }
+        unsafe {
+            (*cur_root.get()).key = Some(key);
+        }
         Ok(())
     }
 
     /// An implementation detail of `delete`
-    fn delete_helper(&mut self, title: &Vec<char>, i: usize, cur_root: Arc<UnsafeCell<ArcMovieTrieNode>>) -> (Option<u32>, bool) {
+    fn delete_helper(
+        &mut self,
+        title: &Vec<char>,
+        i: usize,
+        cur_root: Arc<UnsafeCell<ArcMovieTrieNode>>,
+    ) -> (Option<u32>, bool) {
         if i == title.len() {
             match unsafe { ((*cur_root.get()).key, (*cur_root.get()).children.is_empty()) } {
                 (Some(k), true) => return (Some(k), true),
                 (Some(k), false) => return (Some(k), false),
                 (_, _) => return (None, false),
             }
-        } else if  unsafe { (*cur_root.get()).children.contains_key(&title[i]) } {
-            let next_node = Arc::clone(unsafe { &(*cur_root.get()).children[&title[i]] } );
+        } else if unsafe { (*cur_root.get()).children.contains_key(&title[i]) } {
+            let next_node = Arc::clone(unsafe { &(*cur_root.get()).children[&title[i]] });
             let (key, flag) = self.delete_helper(title, i + 1, next_node);
             if flag {
-                unsafe { (*cur_root.get()).children.remove(&title[i]); }
+                unsafe {
+                    (*cur_root.get()).children.remove(&title[i]);
+                }
             }
             return (
                 key,
@@ -307,7 +324,7 @@ impl ArcMovieTrie {
                     true
                 } else {
                     false
-                }
+                },
             );
         }
         (None, false)
@@ -354,7 +371,7 @@ impl ArcMovieCollection {
         let mut f = if let Some(f) = self.cur_file.take() {
             BufWriter::new(f)
         } else {
-            return Err(DbError::NoFileLoaded)
+            return Err(DbError::NoFileLoaded);
         };
         // Write data to file
         for (id, (movie, _)) in &self.movie_map {
@@ -369,7 +386,9 @@ impl ArcMovieCollection {
                 image_bytes.len() as u32,
                 rating,
             );
-            let movie_bytes = tag.iter().map(|b| *b)
+            let movie_bytes = tag
+                .iter()
+                .map(|b| *b)
                 .chain(title_bytes.iter().map(|b| *b))
                 .chain(description_bytes.iter().map(|b| *b))
                 .chain(image_bytes.iter().map(|b| *b))
@@ -389,7 +408,13 @@ impl ArcMovieCollection {
             self.write_to_file_flush()?;
         }
         // Read the file from the provided path
-        let mut f = if let Ok(f) = OpenOptions::new().read(true).write(true).append(true).create(true).open(path) {
+        let mut f = if let Ok(f) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(path)
+        {
             BufReader::new(f)
         } else {
             eprintln!("error loading file");
@@ -403,7 +428,8 @@ impl ArcMovieCollection {
 
         while let Ok(_) = f.read_exact(&mut tag_buf) {
             // Read the tag for the current record
-            let (id, title_len, description_len, image_len, rating) = ArcMovieCollection::decode_tag(&tag_buf);
+            let (id, title_len, description_len, image_len, rating) =
+                ArcMovieCollection::decode_tag(&tag_buf);
             let mut title_bytes = vec![0_u8; title_len as usize];
             let mut description_bytes = vec![0_u8; description_len as usize];
             let mut image_bytes = vec![0_u8; image_len as usize];
@@ -418,11 +444,13 @@ impl ArcMovieCollection {
                 return Err(DbError::ReadError("image"));
             }
             // Bytes read successfully, now create movie
-            let movie = if let Ok(m) = Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes) {
+            let movie = if let Ok(m) =
+                Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes)
+            {
                 m
             } else {
                 eprintln!("failed to create movie");
-                return Err(DbError::CreationError)
+                return Err(DbError::CreationError);
             };
             if let Ok(pos) = cur_pos_res {
                 // Reset `self.cur_id` to max to ensure we always have `self.cur_id`
@@ -460,6 +488,11 @@ impl ArcMovieCollection {
         }
     }
 
+    /// Method for getting all movies from the collection
+    pub fn get_all_movies(&self) -> Vec<&Movie> {
+        self.movie_map.iter().map(|(_,(movie, _))| movie).collect::<Vec<&Movie>>()
+    }
+
     /// Method for deleting a movie from the collection. Returns a `Result<(), DbError>`, note it is considered an error to try and
     /// delete a movie that is not currently in the collection.
     pub fn delete(&mut self, id: u32) -> Result<(), DbError> {
@@ -476,16 +509,16 @@ impl ArcMovieCollection {
     /// Ok(()) if the movie was added successfully, and Err if the movie was already contained in the collection.
     pub fn add_record(&mut self, movie: Movie) -> Result<(), DbError> {
         // Get a reference to the file handle currently loaded
-        let mut f = if let Some( f) = self.cur_file.as_mut() {
+        let mut f = if let Some(f) = self.cur_file.as_mut() {
             f
         } else {
-            return Err(DbError::NoFileLoaded)
+            return Err(DbError::NoFileLoaded);
         };
         // Get byte position in current file from the end
         let byte_pos = if let Ok(b) = f.seek(SeekFrom::End(0)) {
             b
         } else {
-            return Err(DbError::LoadError)
+            return Err(DbError::LoadError);
         };
         // Increment id for new record
         self.cur_id += 1;
@@ -498,9 +531,12 @@ impl ArcMovieCollection {
             self.cur_id,
             title_bytes.len() as u32,
             description_bytes.len() as u32,
-            image_bytes.len() as u32, rating
+            image_bytes.len() as u32,
+            rating,
         );
-        let movie_bytes = tag.iter().map(|b| *b)
+        let movie_bytes = tag
+            .iter()
+            .map(|b| *b)
             .chain(title_bytes.iter().map(|b| *b))
             .chain(description_bytes.iter().map(|b| *b))
             .chain(image_bytes.iter().map(|b| *b))
@@ -540,7 +576,13 @@ impl ArcMovieCollection {
     }
 
     /// Private helper method to encode a tag as a slice of bytes from given movie attributes
-    fn encode_tag(id: u32, title_len: u32, description_len: u32, image_len: u32, rating: u8) -> [u8; 17] {
+    fn encode_tag(
+        id: u32,
+        title_len: u32,
+        description_len: u32,
+        image_len: u32,
+        rating: u8,
+    ) -> [u8; 17] {
         let mut bytes = [0_u8; 17];
         for i in 0..4 {
             bytes[i] = ((id >> (i * 8)) & 0xff) as u8;
@@ -587,9 +629,10 @@ impl DbLock {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
         let mut collection = ArcMovieCollection::new();
         collection.load(path)?;
-        Ok(
-            Self { collection: UnsafeCell::new(collection), state: AtomicU32::new(0) }
-        )
+        Ok(Self {
+            collection: UnsafeCell::new(collection),
+            state: AtomicU32::new(0),
+        })
     }
 
     /// Locks the `DbLock` and returns the `DbLockGuard` for interacting with the `ArcMovieCollection`.
@@ -638,7 +681,6 @@ impl Drop for DbLockGuard<'_> {
     }
 }
 
-
 /// A data structure for managing movies like a database.
 /// Uses a `MovieTrie` for efficient lookups by title, as well finding results similar to a given search query.
 /// Uses a `HashMap` for mapping a movies id to its current location in the data base i.e file.
@@ -680,22 +722,17 @@ impl MovieCollection {
                 title.len() as u32,
                 description.len() as u32,
                 image.len() as u32,
-                movie.rating
+                movie.rating,
             );
 
             // Collect all bytes into one vector to write to the file
-            let movie_bytes = encoded_tag.iter()
-                                                .map(|b| *b)
-                                                .chain(
-                                                    title.iter().map(|b| *b)
-                                                )
-                                                .chain(
-                                                    description.iter().map(|b| *b)
-                                                )
-                                                .chain(
-                                                    image.iter().map(|b| *b)
-                                                )
-                                                .collect::<Vec<u8>>();
+            let movie_bytes = encoded_tag
+                .iter()
+                .map(|b| *b)
+                .chain(title.iter().map(|b| *b))
+                .chain(description.iter().map(|b| *b))
+                .chain(image.iter().map(|b| *b))
+                .collect::<Vec<u8>>();
             if let Err(_) = cur_file.write(movie_bytes.as_slice()) {
                 // Reassign file in order to not lose potential data
                 // We know cur_file contains a valid `File` struct, so it is safe to unwrap
@@ -717,7 +754,13 @@ impl MovieCollection {
         if self.cur_file.is_some() {
             self.write_to_file_flush()?;
         }
-        let mut f = if let Ok(f) = OpenOptions::new().read(true).append(true).write(true).create(true).open(path) {
+        let mut f = if let Ok(f) = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .write(true)
+            .create(true)
+            .open(path)
+        {
             BufReader::new(f)
         } else {
             println!("File not loaded");
@@ -735,7 +778,8 @@ impl MovieCollection {
 
         while let Ok(_) = f.read_exact(&mut cur_tag_buf) {
             // Read tag from the buffer
-            let (id, title_len, description_len, image_len, rating) = MovieCollection::decode_tag(&cur_tag_buf);
+            let (id, title_len, description_len, image_len, rating) =
+                MovieCollection::decode_tag(&cur_tag_buf);
 
             // Allocate vectors for bytes to be read from file
             let mut title_bytes = vec![0; title_len as usize];
@@ -753,11 +797,13 @@ impl MovieCollection {
                 return Err(DbError::ReadError("image link"));
             }
             // Construct movie object
-            let movie = if let Ok(m) = Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes) {
+            let movie = if let Ok(m) =
+                Movie::from_bytes(title_bytes, rating, description_bytes, image_bytes)
+            {
                 m
             } else {
                 println!("Failed to create movie");
-                return Err(DbError::CreationError)
+                return Err(DbError::CreationError);
             };
             // Ensure we have the cursor position of the current record
             if let Ok(pos) = cur_pos_res {
@@ -804,15 +850,15 @@ impl MovieCollection {
     /// Adds a movie to the `MovieCollection`. Takes a `Movie` struct as a parameter the movie to add to the collection.
     /// Returns a `Result<(), `DbError`>.
     pub fn add_record(&mut self, movie: Movie) -> Result<(), DbError> {
-       if self.cur_file.is_none() {
-           return Err(DbError::NoFileLoaded);
-       }
+        if self.cur_file.is_none() {
+            return Err(DbError::NoFileLoaded);
+        }
 
-       let cur_file = self.cur_file.as_mut().unwrap();
+        let cur_file = self.cur_file.as_mut().unwrap();
         let cur_pos_bytes = if let Ok(b) = cur_file.seek(SeekFrom::End(0)) {
             b
         } else {
-            return Err(DbError::LoadError)
+            return Err(DbError::LoadError);
         };
         if self.cur_id == u32::MAX {
             return Err(DbError::CollectionFull);
@@ -823,7 +869,7 @@ impl MovieCollection {
     }
 
     /// Private helper method, adds a record from a file.
-    fn add_record_from_file(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError>{
+    fn add_record_from_file(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError> {
         // First add movie title with `id` as `key` into `self.trie`
         let title = movie.title.chars().collect::<Vec<char>>();
         self.trie.insert(title, id)?;
@@ -851,7 +897,13 @@ impl MovieCollection {
     }
 
     /// Private helper method to encode a tag as a slice of bytes from given movie attributes
-    fn encode_tag(id: u32, title_len: u32, description_len: u32, image_len: u32, rating: u8) -> [u8; 17] {
+    fn encode_tag(
+        id: u32,
+        title_len: u32,
+        description_len: u32,
+        image_len: u32,
+        rating: u8,
+    ) -> [u8; 17] {
         let mut bytes = [0_u8; 17];
         for i in 0..4 {
             bytes[i] = ((id >> (i * 8)) & 0xff) as u8;
@@ -954,10 +1006,17 @@ mod test {
         let image_len = 738_u32;
         let rating = 3_u8;
 
-        let encoding = MovieCollection::encode_tag(id, title_len, description_len, image_len, rating);
+        let encoding =
+            MovieCollection::encode_tag(id, title_len, description_len, image_len, rating);
         println!("{:?}", encoding);
 
-        let (id_decoded, title_len_decoded, description_len_decoded, image_len_decoded, rating_decoded) = MovieCollection::decode_tag(&encoding);
+        let (
+            id_decoded,
+            title_len_decoded,
+            description_len_decoded,
+            image_len_decoded,
+            rating_decoded,
+        ) = MovieCollection::decode_tag(&encoding);
         println!("{:?}", id_decoded);
         println!("{:?}", title_len_decoded);
         println!("{:?}", description_len_decoded);
@@ -971,15 +1030,34 @@ mod test {
         assert_eq!(rating, rating_decoded);
     }
 
-
     #[test]
     fn test_create_collection() {
         let mut movie_collection = MovieCollection::new();
         assert!(movie_collection.load("movies.txt").is_ok());
-        let movie1 = Movie::new("Lord of the Rings: The Fellowship of the Ring".to_string(), 5, "A brilliant movie".to_string(), "N/A".to_string());
-        let movie2 = Movie::new("Lord of the Rings: The Two Towers".to_string(), 5, "Another brilliant movie".to_string(), "N/A".to_string());
-        let movie3 = Movie::new("Lord of the Rings: The Return of the King".to_string(), 5, "A brilliant ending to the trilogy".to_string(), "N/a".to_string());
-        let movie4 = Movie::new("Borat".to_string(), 5, "A very funny movie".to_string(), "N/A".to_string());
+        let movie1 = Movie::new(
+            "Lord of the Rings: The Fellowship of the Ring".to_string(),
+            5,
+            "A brilliant movie".to_string(),
+            "N/A".to_string(),
+        );
+        let movie2 = Movie::new(
+            "Lord of the Rings: The Two Towers".to_string(),
+            5,
+            "Another brilliant movie".to_string(),
+            "N/A".to_string(),
+        );
+        let movie3 = Movie::new(
+            "Lord of the Rings: The Return of the King".to_string(),
+            5,
+            "A brilliant ending to the trilogy".to_string(),
+            "N/a".to_string(),
+        );
+        let movie4 = Movie::new(
+            "Borat".to_string(),
+            5,
+            "A very funny movie".to_string(),
+            "N/A".to_string(),
+        );
         assert!(movie_collection.add_record(movie1).is_ok());
         assert!(movie_collection.add_record(movie2).is_ok());
         assert!(movie_collection.add_record(movie3).is_ok());
@@ -992,8 +1070,12 @@ mod test {
         let mut movie_collection = MovieCollection::new();
         assert!(movie_collection.load("movies.txt").is_ok());
 
-        assert!(movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).is_some());
-        let id = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).unwrap();
+        assert!(movie_collection
+            .find("Lord of the Rings: The Fellowship of the Ring".to_string())
+            .is_some());
+        let id = movie_collection
+            .find("Lord of the Rings: The Fellowship of the Ring".to_string())
+            .unwrap();
         println!("{id}");
 
         assert!(movie_collection.find("Borat".to_string()).is_some());
@@ -1006,10 +1088,15 @@ mod test {
         let mut movie_collection = MovieCollection::new();
         assert!(movie_collection.load("movies.txt").is_ok());
 
-        let movie = Movie::new("Fear and Loathing in Las Vegas".to_string(), 5, "An amazing movie".to_string(), "N/A".to_string());
+        let movie = Movie::new(
+            "Fear and Loathing in Las Vegas".to_string(),
+            5,
+            "An amazing movie".to_string(),
+            "N/A".to_string(),
+        );
         assert!(movie_collection.add_record(movie).is_ok());
 
-        if let Some(id) =  movie_collection.find("Fear and Loathing in Las Vegas".to_string()) {
+        if let Some(id) = movie_collection.find("Fear and Loathing in Las Vegas".to_string()) {
             println!("Fear and Loathing in Las Vegas has ID: {id}");
             assert!(true);
         } else {
@@ -1018,7 +1105,9 @@ mod test {
         }
 
         // Ensure we still have other data loaded in the collection
-        if let Some(id) = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()) {
+        if let Some(id) =
+            movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string())
+        {
             println!("Lord of the Rings: The Fellowship of the Ring has ID: {id}");
             assert!(true);
         } else {
@@ -1047,10 +1136,30 @@ mod test {
     fn test_create_collection_arc() {
         let mut movie_collection = ArcMovieCollection::new();
         assert!(movie_collection.load("movies_arc.txt").is_ok());
-        let movie1 = Movie::new("Lord of the Rings: The Fellowship of the Ring".to_string(), 5, "A brilliant movie".to_string(), "N/A".to_string());
-        let movie2 = Movie::new("Lord of the Rings: The Two Towers".to_string(), 5, "Another brilliant movie".to_string(), "N/A".to_string());
-        let movie3 = Movie::new("Lord of the Rings: The Return of the King".to_string(), 5, "A brilliant ending to the trilogy".to_string(), "N/a".to_string());
-        let movie4 = Movie::new("Borat".to_string(), 5, "A very funny movie".to_string(), "N/A".to_string());
+        let movie1 = Movie::new(
+            "Lord of the Rings: The Fellowship of the Ring".to_string(),
+            5,
+            "A brilliant movie".to_string(),
+            "N/A".to_string(),
+        );
+        let movie2 = Movie::new(
+            "Lord of the Rings: The Two Towers".to_string(),
+            5,
+            "Another brilliant movie".to_string(),
+            "N/A".to_string(),
+        );
+        let movie3 = Movie::new(
+            "Lord of the Rings: The Return of the King".to_string(),
+            5,
+            "A brilliant ending to the trilogy".to_string(),
+            "N/a".to_string(),
+        );
+        let movie4 = Movie::new(
+            "Borat".to_string(),
+            5,
+            "A very funny movie".to_string(),
+            "N/A".to_string(),
+        );
         assert!(movie_collection.add_record(movie1).is_ok());
         assert!(movie_collection.add_record(movie2).is_ok());
         assert!(movie_collection.add_record(movie3).is_ok());
@@ -1063,8 +1172,12 @@ mod test {
         let mut movie_collection = ArcMovieCollection::new();
         assert!(movie_collection.load("movies_arc.txt").is_ok());
 
-        assert!(movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).is_some());
-        let id = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()).unwrap();
+        assert!(movie_collection
+            .find("Lord of the Rings: The Fellowship of the Ring".to_string())
+            .is_some());
+        let id = movie_collection
+            .find("Lord of the Rings: The Fellowship of the Ring".to_string())
+            .unwrap();
         println!("{id}");
 
         assert!(movie_collection.find("Borat".to_string()).is_some());
@@ -1077,10 +1190,15 @@ mod test {
         let mut movie_collection = ArcMovieCollection::new();
         assert!(movie_collection.load("movies_arc.txt").is_ok());
 
-        let movie = Movie::new("Fear and Loathing in Las Vegas".to_string(), 5, "An amazing movie".to_string(), "N/A".to_string());
+        let movie = Movie::new(
+            "Fear and Loathing in Las Vegas".to_string(),
+            5,
+            "An amazing movie".to_string(),
+            "N/A".to_string(),
+        );
         assert!(movie_collection.add_record(movie).is_ok());
 
-        if let Some(id) =  movie_collection.find("Fear and Loathing in Las Vegas".to_string()) {
+        if let Some(id) = movie_collection.find("Fear and Loathing in Las Vegas".to_string()) {
             println!("Fear and Loathing in Las Vegas has ID: {id}");
             assert!(true);
         } else {
@@ -1089,7 +1207,9 @@ mod test {
         }
 
         // Ensure we still have other data loaded in the collection
-        if let Some(id) = movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string()) {
+        if let Some(id) =
+            movie_collection.find("Lord of the Rings: The Fellowship of the Ring".to_string())
+        {
             println!("Lord of the Rings: The Fellowship of the Ring has ID: {id}");
             assert!(true);
         } else {
@@ -1165,7 +1285,10 @@ mod test {
             });
             s.spawn(|| {
                 for i in 1..=1000 {
-                    assert!(dblock.lock().find(format!("Disney Star Wars {i}")).is_some());
+                    assert!(dblock
+                        .lock()
+                        .find(format!("Disney Star Wars {i}"))
+                        .is_some());
                 }
             });
         });

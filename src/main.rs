@@ -1,13 +1,16 @@
 mod movie_db;
-use std::sync::{Mutex, Arc};
-use std::fmt::{Display, Formatter};
-use std::error::Error;
-use actix_web::{http, web, App, error, HttpRequest, HttpResponse, HttpServer, get, post, Responder, http::header::{ContentType}, ResponseError,};
 use actix_web::body::BoxBody;
 use actix_web::http::StatusCode;
+use actix_web::{
+    error, get, guard, http, http::header::ContentType, post, web, App, HttpRequest, HttpResponse,
+    HttpServer, Responder, ResponseError, put,
+};
+use atomic_wait::{wait, wake_all, wake_one};
 use movie_db::prelude::*;
 use serde_json;
-use atomic_wait::{wake_one, wait, wake_all};
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+use std::sync::{Arc, Mutex};
 
 impl Responder for Movie {
     type Body = BoxBody;
@@ -33,7 +36,6 @@ impl Responder for &Movie {
 enum UserError {
     InternalError,
     NotFound(String),
-
 }
 
 impl Display for UserError {
@@ -51,7 +53,6 @@ impl ResponseError for UserError {
         HttpResponse::build(self.status_code())
             .content_type(ContentType::html())
             .body(self.to_string())
-
     }
 
     fn status_code(&self) -> StatusCode {
@@ -61,7 +62,6 @@ impl ResponseError for UserError {
         }
     }
 }
-
 
 /// Handler that allows users of api to add a movie to the collection
 #[post("/add-movie")]
@@ -74,17 +74,43 @@ async fn add_movie_handler(collection: web::Data<DbLock>, movie: web::Json<Movie
     HttpResponse::Ok().body("OK")
 }
 
+/// Handler that allows user to delete a movie
+#[put("/delete-movie/{title}")]
+async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Query<String>) -> impl Responder {
+    // Lock to get a guard
+    let mut guard = collection.lock();
+    let title = title.into_inner();
+    let id = if let Some(id) = guard.find(title.clone()) {
+        id
+    } else {
+        return Err(UserError::NotFound(title))
+    };
+    guard.delete(id).map_err(|_e| UserError::InternalError)?;
+    Ok("Successfully deleted {title}")
+}
 /// Handler that allows one to query the collection for a specific movie title
 #[get("/find-movie/{title}")]
-async fn find_movie(collection: web::Data<DbLock>, query_title: web::Query<String>) -> impl Responder {
+async fn find_movie_handler(
+    collection: web::Data<DbLock>,
+    query_title: web::Query<String>,
+) -> impl Responder {
     // Get title string from query
     let title = query_title.into_inner();
     // lock the mutex
     let guard = collection.lock();
     match guard.find(title.clone()) {
         Some(id) => Ok(guard.get_movie(id).unwrap().clone()),
-        None => Err(UserError::NotFound(title))
+        None => Err(UserError::NotFound(title)),
     }
+}
+
+/// Handler that will return json string of all movies in the collection
+#[get("/get-all-movies")]
+async fn get_all_movie_handler(collection: web::Data<DbLock>) -> impl Responder {
+    // Lock mutex to ensure lifetime of mutex is long enough
+    let guard = collection.lock();
+    let movies = guard.get_all_movies();
+    serde_json::to_string(&movies)
 }
 
 #[actix_web::main]
@@ -104,9 +130,10 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(app_data.clone())
+            .service(find_movie_handler)
             .service(add_movie_handler)
     })
-        .bind((address, port))?
-        .run()
-        .await
+    .bind((address, port))?
+    .run()
+    .await
 }
