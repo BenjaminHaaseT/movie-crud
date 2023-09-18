@@ -3,7 +3,7 @@ use actix_web::body::BoxBody;
 use actix_web::http::StatusCode;
 use actix_web::{
     error, get, guard, http, http::header::ContentType, post, web, App, HttpRequest, HttpResponse,
-    HttpServer, Responder, ResponseError, put,
+    HttpServer, Responder, ResponseError, put, delete
 };
 use atomic_wait::{wait, wake_all, wake_one};
 use movie_db::prelude::*;
@@ -63,7 +63,7 @@ impl ResponseError for UserError {
     }
 }
 
-/// Handler that allows users of api to add a movie to the collection
+/// Handler that allows users of api to add a movie to the collection.
 #[post("/add-movie")]
 async fn add_movie_handler(collection: web::Data<DbLock>, movie: web::Json<Movie>) -> HttpResponse {
     // Lock the collection struct
@@ -74,8 +74,8 @@ async fn add_movie_handler(collection: web::Data<DbLock>, movie: web::Json<Movie
     HttpResponse::Ok().body("OK")
 }
 
-/// Handler that allows user to delete a movie
-#[put("/delete-movie/{title}")]
+/// Handler that allows user to delete a movie.
+#[delete("/delete-movie/{title}")]
 async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Query<String>) -> impl Responder {
     // Lock to get a guard
     let mut guard = collection.lock();
@@ -88,6 +88,7 @@ async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Query<S
     guard.delete(id).map_err(|_e| UserError::InternalError)?;
     Ok("Successfully deleted {title}")
 }
+
 /// Handler that allows one to query the collection for a specific movie title
 #[get("/find-movie/{title}")]
 async fn find_movie_handler(
@@ -102,6 +103,14 @@ async fn find_movie_handler(
         Some(id) => Ok(guard.get_movie(id).unwrap().clone()),
         None => Err(UserError::NotFound(title)),
     }
+}
+
+/// Handler that will search for all movies matching a prefix
+#[get("/find-movies-by-prefix/{prefix}")]
+async fn find_movies_by_prefix_handler(collection: web::Data<DbLock>, prefix: web::Query<String>) -> impl Responder {
+    let title = prefix.into_inner();
+    let guard = collection.lock();
+
 }
 
 /// Handler that will return json string of all movies in the collection
