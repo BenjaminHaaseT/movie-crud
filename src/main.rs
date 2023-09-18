@@ -12,10 +12,23 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, Mutex};
 
+/// Wrapper for a vector of movies
+struct MovieList(Vec<Movie>);
+
 impl Responder for Movie {
     type Body = BoxBody;
     fn respond_to(self, req: &HttpRequest) -> HttpResponse<Self::Body> {
         let body = serde_json::to_string(&self).unwrap();
+        HttpResponse::Ok()
+            .content_type(ContentType::json())
+            .body(body)
+    }
+}
+
+impl Responder for MovieList {
+    type Body = BoxBody;
+    fn respond_to(self, req: &HttpRequest) -> HttpResponse<Self::Body> {
+        let body = serde_json::to_string(&self.0).unwrap();
         HttpResponse::Ok()
             .content_type(ContentType::json())
             .body(body)
@@ -110,7 +123,8 @@ async fn find_movie_handler(
 async fn find_movies_by_prefix_handler(collection: web::Data<DbLock>, prefix: web::Query<String>) -> impl Responder {
     let title = prefix.into_inner();
     let guard = collection.lock();
-
+    let movies = guard.find_by_prefix(title);
+    MovieList(movies)
 }
 
 /// Handler that will return json string of all movies in the collection

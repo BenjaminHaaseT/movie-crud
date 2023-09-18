@@ -266,6 +266,36 @@ impl ArcMovieTrie {
         None
     }
 
+    /// Helper method for `find_by_prefix`, is a private implementation detail. Populates the result vector.
+    fn find_by_prefix_dfs(&self, node: Arc<UnsafeCell<ArcMovieTrieNode>>, result: &mut Vec<u32>) {
+        if let Some(key) = unsafe { (*node.get()).key.as_ref() } {
+            result.push(*key)
+        }
+        let node_children = unsafe { &(*node.get()).children };
+        for (_, child) in node_children {
+            self.find_by_prefix_dfs(Arc::clone(child), result);
+        }
+    }
+
+    /// Finds all movies that share a common prefix. Returns a `Vec<u32>` of the movies ids, empty if no movie has the given `prefix`.
+    pub fn find_by_prefix<T: Into<Vec<char>>>(&self, prefix: T) -> Vec<u32> {
+        let prefix = prefix.into();
+        let mut cur_root = Arc::clone(&self.root);
+        for c in prefix {
+            let next_node = if let Some(neo) = unsafe { (&*cur_root.get()).children.get(&c) } {
+                Arc::clone(neo)
+            } else {
+                return vec![]
+            };
+            cur_root = next_node;
+        }
+        // Proceed with dfs from cur_root
+        let mut result = vec![];
+        self.find_by_prefix_dfs(cur_root, &mut result);
+        result
+
+    }
+
     /// Inserts a new `title` into the trie with a given `key` as it is id.
     /// Note the method does not ensure that the `key` is unique, that must be ensured by the
     /// user if that property is desired. The method can potentially fail, if `title` is already
@@ -477,6 +507,21 @@ impl ArcMovieCollection {
     pub fn find(&self, title: String) -> Option<u32> {
         let title = title.chars().collect::<Vec<char>>();
         self.trie.contains(title)
+    }
+
+    /// Method for finding movies that share a common prefix. Returns a `Vec<Movie>` of cloned `Movie`s.
+    pub fn find_by_prefix(&self, prefix: String) -> Vec<Movie> {
+        let prefix = prefix.chars().collect::<Vec<char>>();
+        self.trie.find_by_prefix(prefix)
+            .into_iter()
+            .filter_map(|id| {
+                if let Some((m,_)) = self.movie_map.get(&id) {
+                    Some(m.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<Movie>>()
     }
 
     /// Method for getting a movie based on an id
