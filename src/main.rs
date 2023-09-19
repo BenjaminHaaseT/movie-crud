@@ -103,7 +103,7 @@ async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Query<S
 }
 
 /// Handler that allows one to query the collection for a specific movie title
-#[get("/find-movie/{title}")]
+#[get("/find-movie")]
 async fn find_movie_handler(
     collection: web::Data<DbLock>,
     query_title: web::Query<String>,
