@@ -1338,4 +1338,16 @@ mod test {
             });
         });
     }
+
+    #[test]
+    fn test_prefix_find() {
+        let mut movie_collection = ArcMovieCollection::new();
+        assert!(movie_collection.load("movies_arc.txt").is_ok());
+
+        let res = movie_collection.find_by_prefix("Lord ".to_string());
+        println!("results: {:?}", res);
+
+        let res = movie_collection.find_by_prefix("Lord of the Rings: The R".to_string());
+        println!("results: {:?}", res);
+    }
 }
