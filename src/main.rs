@@ -155,6 +155,9 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_data.clone())
             .service(find_movie_handler)
             .service(add_movie_handler)
+            .service(get_all_movie_handler)
+            .service(delete_movie_handler)
+            .service(find_movies_by_prefix_handler)
     })
     .bind((address, port))?
     .run()
