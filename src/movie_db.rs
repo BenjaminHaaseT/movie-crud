@@ -378,6 +378,7 @@ unsafe impl Sync for ArcMovieTrie {}
 pub struct ArcMovieCollection {
     trie: ArcMovieTrie,
     movie_map: HashMap<u32, (Movie, u64)>,
+    write_on_drop: bool,
     cur_file: Option<File>,
     cur_id: u32,
 }
@@ -387,15 +388,37 @@ impl ArcMovieCollection {
         Self {
             trie: ArcMovieTrie::new(),
             movie_map: HashMap::new(),
+            write_on_drop: false,
             cur_file: None,
             cur_id: 0,
         }
     }
 
     /// Helper method for writing movie information to the file
-    // fn write_record(&mut self, pos: u64, id: u32, movie: Movie) -> Result<(), DbError> {
-    //
-    // }
+    fn write_record(id: &u32, movie: &Movie, f: &mut impl Write) -> Result<(), DbError> {
+        let title_bytes = movie.title.as_bytes();
+        let description_bytes = movie.description.as_bytes();
+        let image_bytes = movie.image.as_bytes();
+        let rating = movie.rating;
+        let tag = ArcMovieCollection::encode_tag(
+            *id,
+            title_bytes.len() as u32,
+            description_bytes.len() as u32,
+            image_bytes.len() as u32,
+            rating
+        );
+        let movie_bytes = tag
+            .iter()
+            .map(|b| *b)
+            .chain(title_bytes.iter().map(|b| *b))
+            .chain(description_bytes.iter().map(|b| *b))
+            .chain(image_bytes.iter().map(|b| *b))
+            .collect::<Vec<u8>>();
+        if let Err(_) = f.write(tag.as_slice()) {
+            return Err(DbError::WriteError);
+        }
+        Ok(())
+    }
 
     pub fn write_to_file_flush(&mut self) -> Result<(), DbError> {
         let mut f = if let Some(f) = self.cur_file.take() {
@@ -405,29 +428,30 @@ impl ArcMovieCollection {
         };
         // Write data to file
         for (id, (movie, _)) in &self.movie_map {
-            let title_bytes = movie.title.as_bytes();
-            let description_bytes = movie.description.as_bytes();
-            let image_bytes = movie.image.as_bytes();
-            let rating = movie.rating;
-            let tag = ArcMovieCollection::encode_tag(
-                *id,
-                title_bytes.len() as u32,
-                description_bytes.len() as u32,
-                image_bytes.len() as u32,
-                rating,
-            );
-            let movie_bytes = tag
-                .iter()
-                .map(|b| *b)
-                .chain(title_bytes.iter().map(|b| *b))
-                .chain(description_bytes.iter().map(|b| *b))
-                .chain(image_bytes.iter().map(|b| *b))
-                .collect::<Vec<u8>>();
-            if let Err(_) = f.write(&movie_bytes) {
-                // Save the file handle
-                self.cur_file = Some(f.into_inner().unwrap());
-                return Err(DbError::WriteError);
-            }
+            // let title_bytes = movie.title.as_bytes();
+            // let description_bytes = movie.description.as_bytes();
+            // let image_bytes = movie.image.as_bytes();
+            // let rating = movie.rating;
+            // let tag = ArcMovieCollection::encode_tag(
+            //     *id,
+            //     title_bytes.len() as u32,
+            //     description_bytes.len() as u32,
+            //     image_bytes.len() as u32,
+            //     rating,
+            // );
+            // let movie_bytes = tag
+            //     .iter()
+            //     .map(|b| *b)
+            //     .chain(title_bytes.iter().map(|b| *b))
+            //     .chain(description_bytes.iter().map(|b| *b))
+            //     .chain(image_bytes.iter().map(|b| *b))
+            //     .collect::<Vec<u8>>();
+            // if let Err(_) = f.write(&movie_bytes) {
+            //     // Save the file handle
+            //     self.cur_file = Some(f.into_inner().unwrap());
+            //     return Err(DbError::WriteError);
+            // }
+            ArcMovieCollection::write_record(id, movie, &mut f)?;
         }
         Ok(())
     }
@@ -547,7 +571,29 @@ impl ArcMovieCollection {
         let (movie, _) = self.movie_map.remove(&id).unwrap();
         let title = movie.title.chars().collect::<Vec<char>>();
         self.trie.delete(title);
+        self.write_on_drop = true;
         Ok(())
+    }
+
+    /// Updates a movie with `id` with `new_movie`
+    pub fn update(&mut self, id: u32, new_movie: Movie) -> Result<(), DbError> {
+        if let Some((old_movie, _)) = self.movie_map.get_mut(&id) {
+            if new_movie.title != old_movie.title {
+                old_movie.title = new_movie.title;
+            }
+            if new_movie.description != old_movie.description {
+                old_movie.description = new_movie.description;
+            }
+            if new_movie.image != old_movie.image {
+                old_movie.image = new_movie.image;
+            }
+            if new_movie.rating != old_movie.rating {
+                old_movie.rating = new_movie.rating;
+            }
+            self.write_on_drop = true;
+            return Ok(());
+        }
+        Err(DbError::RecordDoesNotExist(id))
     }
 
     /// Method for adding an arbitrary record to the collection. Takes a `Movie` and returns a result
@@ -570,7 +616,7 @@ impl ArcMovieCollection {
         // Write new record to file
         let title_bytes = movie.title.as_bytes();
         let description_bytes = movie.description.as_bytes();
-        let image_bytes = movie.description.as_bytes();
+        let image_bytes = movie.image.as_bytes();
         let rating = movie.rating;
         let tag = MovieCollection::encode_tag(
             self.cur_id,
@@ -647,6 +693,21 @@ impl ArcMovieCollection {
 }
 
 unsafe impl Send for ArcMovieCollection {}
+
+impl Drop for ArcMovieCollection {
+    fn drop(&mut self) {
+        // Write all changes to file
+        if self.write_on_drop {
+            if self.cur_file.is_some() {
+                let _ = self.write_to_file_flush();
+            } else {
+                // Should never happen
+                panic!("file should be loaded for write_on_drop")
+            }
+        }
+
+    }
+}
 
 /// A lock for interacting with a `ArcMovieCollection` in a thread safe way i.e. provides the
 /// thread/memory safety guarantees for the `ArcMovieCollection` struct.

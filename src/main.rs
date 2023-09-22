@@ -3,13 +3,14 @@ use actix_web::body::BoxBody;
 use actix_web::http::StatusCode;
 use actix_web::{
     error, get, guard, http, http::header::ContentType, post, web, App, HttpRequest, HttpResponse,
-    HttpServer, Responder, ResponseError, put, delete
+    HttpServer, Responder, ResponseError, put, delete,
 };
 use atomic_wait::{wait, wake_all, wake_one};
 use movie_db::prelude::*;
 use serde_json;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use serde::{Serialize, Deserialize};
 use std::sync::{Arc, Mutex};
 
 /// Wrapper for a vector of movies
@@ -49,6 +50,7 @@ impl Responder for &Movie {
 enum UserError {
     InternalError,
     NotFound(String),
+    IdNotFound(u32),
 }
 
 impl Display for UserError {
@@ -56,6 +58,7 @@ impl Display for UserError {
         match self {
             UserError::InternalError => write!(f, "An internal server error occurred"),
             UserError::NotFound(title) => write!(f, "no record with title: {title}"),
+            UserError::IdNotFound(id) => write!(f, "no record with id: {id}"),
         }
     }
 }
@@ -72,9 +75,13 @@ impl ResponseError for UserError {
         match self {
             UserError::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             UserError::NotFound(_) => StatusCode::BAD_REQUEST,
+            UserError::IdNotFound(_) => StatusCode::BAD_REQUEST,
         }
     }
 }
+
+#[derive(Deserialize)]
+struct MovieTitle { title: String }
 
 /// Handler that allows users of api to add a movie to the collection.
 #[post("/add-movie")]
@@ -89,7 +96,7 @@ async fn add_movie_handler(collection: web::Data<DbLock>, movie: web::Json<Movie
 
 /// Handler that allows user to delete a movie.
 #[delete("/delete-movie/{title}")]
-async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Query<String>) -> impl Responder {
+async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Path<String>) -> impl Responder {
     // Lock to get a guard
     let mut guard = collection.lock();
     let title = title.into_inner();
@@ -99,17 +106,17 @@ async fn delete_movie_handler(collection: web::Data<DbLock>, title: web::Query<S
         return Err(UserError::NotFound(title))
     };
     guard.delete(id).map_err(|_e| UserError::InternalError)?;
-    Ok("Successfully deleted {title}")
+    Ok(format!("Successfully deleted {title}"))
 }
 
 /// Handler that allows one to query the collection for a specific movie title
 #[get("/find-movie")]
 async fn find_movie_handler(
     collection: web::Data<DbLock>,
-    query_title: web::Query<String>,
+    query_title: web::Query<MovieTitle>,
 ) -> impl Responder {
     // Get title string from query
-    let title = query_title.into_inner();
+    let title = query_title.into_inner().title;
     // lock the mutex
     let guard = collection.lock();
     match guard.find(title.clone()) {
@@ -118,9 +125,27 @@ async fn find_movie_handler(
     }
 }
 
+/// Handler for updating a movie
+#[put("/update/{id}")]
+async fn update_movie_handler(
+    collection: web::Data<DbLock>,
+    movie: web::Json<Movie>,
+    movie_id: web::Path<u32>
+) -> impl Responder {
+    // Get id from path
+    let movie = movie.into_inner();
+    let movie_id = movie_id.into_inner();
+    let mut guard = collection.lock();
+    if let Ok(_) = guard.update(movie_id, movie) {
+        Ok(HttpResponse::Ok().body("updated movie {movie_id} successfully"))
+    } else {
+        Err(UserError::IdNotFound(movie_id))
+    }
+}
+
 /// Handler that will search for all movies matching a prefix
 #[get("/find-movies-by-prefix/{prefix}")]
-async fn find_movies_by_prefix_handler(collection: web::Data<DbLock>, prefix: web::Query<String>) -> impl Responder {
+async fn find_movies_by_prefix_handler(collection: web::Data<DbLock>, prefix: web::Path<String>) -> impl Responder {
     let title = prefix.into_inner();
     let guard = collection.lock();
     let movies = guard.find_by_prefix(title);
