@@ -705,7 +705,6 @@ impl Drop for ArcMovieCollection {
                 panic!("file should be loaded for write_on_drop")
             }
         }
-
     }
 }
 
